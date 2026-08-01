@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Fondo crema (#FDF6E3), nunca blanco puro: reduce el deslumbramiento y tiene
+      evidencia a favor en lectura con dificultades (documento maestro §11.2).
+    -->
+    <style name="Theme.Masi" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/crema</item>
+        <item name="android:statusBarColor">@color/crema</item>
+        <item name="android:navigationBarColor">@color/crema</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

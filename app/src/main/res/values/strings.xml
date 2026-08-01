@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Masi</string>
+
+    <!-- Descripciones de contenido (accesibilidad). El niño no lee: esto es para TalkBack. -->
+    <string name="cd_leer">Fotografiar una página del libro</string>
+    <string name="cd_escuchar">Leer en voz alta</string>
+    <string name="cd_tarjetas">Practicar mis palabras</string>
+    <string name="cd_grabar">Grabar mi voz</string>
+    <string name="cd_detener">Terminar de grabar</string>
+    <string name="cd_disparador">Tomar la foto</string>
+    <string name="cd_volver">Volver</string>
+    <string name="cd_escuchar_de_nuevo">Escuchar de nuevo</string>
+    <string name="cd_ajustes">Ajustes para adultos</string>
+</resources>
