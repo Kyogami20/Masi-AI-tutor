@@ -38,6 +38,14 @@ data class Par(
   val operacion: Operacion,
 )
 
+/**
+ * Una palabra en sus dos formas: como está impresa y como se compara.
+ *
+ * @param escritura tal cual aparece en el libro, con sus tildes y mayúsculas: "estableció".
+ * @param normalizada en minúsculas y sin tildes, que es como se compara: "establecio".
+ */
+data class PalabraOriginal(val escritura: String, val normalizada: String)
+
 /** Una discrepancia concreta entre lo escrito y lo leído. */
 data class ErrorLectura(
   /** Índice de la palabra dentro del texto esperado. */
@@ -62,6 +70,10 @@ object DetectorErrores {
 
   private val SIGNOS = Regex("""[^\p{L}\p{N}\s]""")
   private val ESPACIOS = Regex("""\s+""")
+
+  /** Puntuación que se recorta de los bordes al recuperar la palabra tal como está escrita. */
+  private val SIGNOS_AL_BORDE =
+    charArrayOf(',', '.', ';', ':', '!', '?', '¡', '¿', '"', '«', '»', '(', ')', '—', '–', '-', '\'')
 
   /**
    * Vocales acentuadas del español y su equivalente sin tilde.
@@ -95,6 +107,35 @@ object DetectorErrores {
     val n = normalizar(texto)
     return if (n.isEmpty()) emptyList() else n.split(" ")
   }
+
+  /**
+   * Lo mismo que [palabras], pero conservando además cómo está escrita cada palabra en el libro.
+   *
+   * Hace falta porque comparar y mostrar necesitan cosas distintas. Para comparar se normaliza —sin
+   * tildes, en minúsculas— y eso está bien: la transcripción de un modelo no es fiable con los
+   * acentos, y marcar una tilde como error de lectura sería un falso positivo casi seguro.
+   *
+   * Pero la palabra que acaba en una tarjeta es la que el niño va a ver y a aprender, y ahí
+   * "establecio" sin tilde es sencillamente la ortografía equivocada. La tarjeta guarda la forma
+   * normalizada como clave y esta como texto.
+   *
+   * **Garantía**: `palabrasConOriginal(t).map { it.normalizada } == palabras(t)`, elemento a
+   * elemento. Sin esa alineación, el índice de un [ErrorLectura] apuntaría a la palabra de al lado.
+   */
+  fun palabrasConOriginal(texto: String): List<PalabraOriginal> =
+    texto.split(ESPACIOS).flatMap { bruto ->
+      // Un solo trozo puede contener más de una palabra si lleva puntuación pegada ("casa.La"):
+      // `normalizar` convierte el signo en espacio, así que aquí hay que partir igual para no
+      // desalinearse.
+      val partes = normalizar(bruto).let { if (it.isEmpty()) emptyList() else it.split(" ") }
+      when (partes.size) {
+        0 -> emptyList()
+        1 -> listOf(PalabraOriginal(bruto.trim(*SIGNOS_AL_BORDE), partes[0]))
+        // Caso raro: se renuncia a recuperar el original y se usa el normalizado. Preferible a
+        // devolver un texto que no corresponde con la palabra que se está marcando.
+        else -> partes.map { PalabraOriginal(it, it) }
+      }
+    }
 
   /**
    * Alineación palabra a palabra por distancia de edición, con reconstrucción del camino.

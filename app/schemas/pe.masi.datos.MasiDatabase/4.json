@@ -1,0 +1,133 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 4,
+    "identityHash": "f38e8d0bcfed927fdcec19d565308ec4",
+    "entities": [
+      {
+        "tableName": "tarjetas",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`palabra` TEXT NOT NULL, `escritura` TEXT NOT NULL, `silabas` TEXT NOT NULL, `pista` TEXT NOT NULL, `nivel` INTEGER NOT NULL, `proximoDiaEpoch` INTEGER NOT NULL, `creadaDiaEpoch` INTEGER NOT NULL, `aciertos` INTEGER NOT NULL, `definicion` TEXT NOT NULL, `ejemplo` TEXT NOT NULL, `pictograma` TEXT NOT NULL, PRIMARY KEY(`palabra`))",
+        "fields": [
+          {
+            "fieldPath": "palabra",
+            "columnName": "palabra",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "escritura",
+            "columnName": "escritura",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "silabas",
+            "columnName": "silabas",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pista",
+            "columnName": "pista",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nivel",
+            "columnName": "nivel",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "proximoDiaEpoch",
+            "columnName": "proximoDiaEpoch",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "creadaDiaEpoch",
+            "columnName": "creadaDiaEpoch",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "aciertos",
+            "columnName": "aciertos",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "definicion",
+            "columnName": "definicion",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ejemplo",
+            "columnName": "ejemplo",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pictograma",
+            "columnName": "pictograma",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "palabra"
+          ]
+        }
+      },
+      {
+        "tableName": "cuentos",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `titulo` TEXT NOT NULL, `texto` TEXT NOT NULL, `palabrasUsadas` TEXT NOT NULL, `creadoDiaEpoch` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "titulo",
+            "columnName": "titulo",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "texto",
+            "columnName": "texto",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "palabrasUsadas",
+            "columnName": "palabrasUsadas",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "creadoDiaEpoch",
+            "columnName": "creadoDiaEpoch",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'f38e8d0bcfed927fdcec19d565308ec4')"
+    ]
+  }
+}

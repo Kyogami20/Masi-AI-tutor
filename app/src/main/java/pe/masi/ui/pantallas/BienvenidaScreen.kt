@@ -25,6 +25,15 @@ import pe.masi.ui.MasiViewModel
 import pe.masi.ui.componentes.BarraProgreso
 import pe.masi.ui.componentes.EstadoCargando
 import pe.masi.ui.componentes.FondoMasi
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.ui.platform.LocalContext
+import pe.masi.diagnostico.Antecedente
+import pe.masi.diagnostico.CajaNegra
+import pe.masi.diagnostico.Paso
+import pe.masi.motor.RecursosDispositivo
+import pe.masi.ui.componentes.BotonGrande
+import pe.masi.ui.componentes.FilaDeBotones
 import pe.masi.ui.componentes.Hueco
 import pe.masi.descarga.ImportadorSAF
 
@@ -74,6 +83,37 @@ fun BienvenidaScreen(vm: MasiViewModel, onListo: () -> Unit) {
           EstadoCargando("Masi se está despertando…")
 
         is EstadoArranque.Listo -> EstadoCargando("¡Ya casi!")
+
+        // El modelo está en el teléfono pero NO se ha encendido, y el botón es deliberado.
+        //
+        // Encenderlo automáticamente al acabar la descarga cerraba la app en un Galaxy A14: pedir
+        // 2,6 GB de RAM en el mismo segundo en que se acaban de escribir 2,6 GB al disco, con la
+        // caché del kernel llena. Los segundos que tarda alguien en leer esto y pulsar le bastan al
+        // sistema para soltarla.
+        is EstadoArranque.ModeloListo -> {
+          Text(
+            text = "¡Ya está todo!",
+            style = MaterialTheme.typography.headlineMedium,
+            textAlign = TextAlign.Center,
+          )
+          Hueco(12)
+          Text(
+            text = "Masi ya tiene todo lo que necesita. No hace falta internet nunca más.",
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+          )
+          AvisoDeMemoria(vm)
+          Hueco(24)
+          FilaDeBotones(cuantos = 1) { tamano ->
+            BotonGrande(
+              icono = Icons.Rounded.PlayArrow,
+              etiqueta = "Empezar",
+              descripcion = "Encender Masi",
+              tamano = tamano,
+              onClick = vm::encenderMotor,
+            )
+          }
+        }
 
         is EstadoArranque.FaltaModelo -> FaltaModelo(vm, selectorArchivo::launch)
 
@@ -157,3 +197,36 @@ private fun FaltaModelo(vm: MasiViewModel, abrirSelector: (Array<String>) -> Uni
 }
 
 private fun enGigas(bytes: Long): String = "%.1f GB".format(bytes / 1_000_000_000.0)
+
+/**
+ * El aviso de memoria, cuando toca. **Nunca impide seguir.**
+ *
+ * La medición de Android es conservadora: no cuenta la caché de páginas que el kernel libera en
+ * cuanto alguien se la pide, así que un umbral que bloqueara dejaría fuera teléfonos que sí
+ * funcionan. Se dan los números y decide quien tiene el aparato en la mano, que además sabe si
+ * acaba de cerrar el navegador.
+ *
+ * Si la vez anterior el teléfono murió cargando el modelo, eso ya no es una estimación sino un
+ * hecho, y entonces sí se desaconseja de verdad.
+ */
+@Composable
+private fun AvisoDeMemoria(vm: MasiViewModel) {
+  val context = LocalContext.current
+  val murioCargando =
+    (CajaNegra.ultimoAntecedente() as? Antecedente.SeCerroEn)?.paso == Paso.CARGANDO_MODELO
+  val aviso = RecursosDispositivo.avisoAntesDeCargar(context)
+  if (!murioCargando && aviso == null) return
+
+  Hueco(16)
+  Text(
+    text =
+      if (murioCargando) {
+        "La vez anterior este teléfono no pudo con el modelo. Cierra otras aplicaciones antes de " +
+          "intentarlo, o usa el modo demostración desde Ajustes."
+      } else {
+        aviso.orEmpty()
+      },
+    style = MaterialTheme.typography.labelMedium,
+    textAlign = TextAlign.Center,
+  )
+}

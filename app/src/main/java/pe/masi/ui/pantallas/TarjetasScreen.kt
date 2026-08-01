@@ -11,8 +11,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -45,13 +49,16 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import pe.masi.R
+import pe.masi.datos.Tarjeta
 import pe.masi.ui.EstadoTarjeta
 import pe.masi.ui.MasiViewModel
 import pe.masi.ui.componentes.BarraInferior
 import pe.masi.ui.componentes.BotonGrande
+import pe.masi.ui.componentes.CartaPalabra
 import pe.masi.ui.componentes.EstadoCargando
 import pe.masi.ui.componentes.FilaDeBotones
 import pe.masi.ui.componentes.Hueco
+import pe.masi.ui.componentes.Pictograma
 import pe.masi.ui.componentes.PalabraGigante
 import pe.masi.ui.componentes.PantallaMasi
 import pe.masi.ui.theme.AzulCalma
@@ -80,6 +87,7 @@ fun TarjetasScreen(vm: MasiViewModel, onVolver: () -> Unit, onLeer: () -> Unit) 
   val tocanHoy by vm.tocanHoy.collectAsStateWithLifecycle()
   val estado by vm.estadoTarjeta.collectAsStateWithLifecycle()
   val amplitud by vm.amplitud.collectAsStateWithLifecycle()
+  val practicando by vm.practicandoTarjeta.collectAsStateWithLifecycle()
   val context = LocalContext.current
 
   var confirmarBorrado by remember { mutableStateOf(false) }
@@ -97,12 +105,21 @@ fun TarjetasScreen(vm: MasiViewModel, onVolver: () -> Unit, onLeer: () -> Unit) 
 
   LaunchedEffect(Unit) {
     vm.cargarRepaso()
+    // Las tarjetas que aún no tienen dibujo ni definición se completan en segundo plano.
+    vm.enriquecerPendientes()
     if (!tienePermiso) pedirPermiso.launch(Manifest.permission.RECORD_AUDIO)
   }
 
   val actual = tarjeta
   if (actual == null) {
     SinPalabras(vm, onLeer, onVolver)
+    return
+  }
+
+  // La entrada por defecto es la vista general. Ver de un vistazo todo lo que lleva practicado es
+  // información que la secuencia de una en una escondía, y elegir por dónde empezar también enseña.
+  if (!practicando) {
+    CuadriculaDeTarjetas(cola = cola, tocanHoy = tocanHoy, onAbrir = vm::abrirTarjeta, onVolver = onVolver)
     return
   }
 
@@ -128,8 +145,8 @@ fun TarjetasScreen(vm: MasiViewModel, onVolver: () -> Unit, onLeer: () -> Unit) 
         // Durante la grabación no se navega: se perdería el audio a medias.
         onAnterior = if (ocupado) null else vm::anteriorTarjeta,
         onSiguiente = if (ocupado) null else vm::siguienteTarjeta,
-        etiquetaCentro = "Salir",
-        onCentro = onVolver,
+        etiquetaCentro = "Todas",
+        onCentro = vm::volverALaCuadricula,
       )
     },
   ) {
@@ -149,7 +166,19 @@ fun TarjetasScreen(vm: MasiViewModel, onVolver: () -> Unit, onLeer: () -> Unit) 
             is EstadoTarjeta.Pensando -> EstadoCargando("Masi te está escuchando…")
 
             else -> {
-              PalabraGigante(palabra = actual.palabra, silabas = actual.silabas)
+              Pictograma(actual.pictograma.ifBlank { null }, tamano = 128.dp)
+              Hueco(8)
+              PalabraGigante(palabra = actual.comoSeEscribe, silabas = actual.silabas)
+              if (actual.definicion.isNotBlank()) {
+                Hueco(10)
+                Text(
+                  text = actual.definicion,
+                  style = MaterialTheme.typography.bodyMedium,
+                  textAlign = TextAlign.Center,
+                  color = MaterialTheme.colorScheme.outline,
+                  modifier = Modifier.fillMaxWidth(),
+                )
+              }
               Hueco(16)
               when (e) {
                 is EstadoTarjeta.Lograda ->
@@ -192,7 +221,7 @@ fun TarjetasScreen(vm: MasiViewModel, onVolver: () -> Unit, onLeer: () -> Unit) 
         }
       }
 
-      AccionesTarjeta(vm, estado, actual.palabra, tienePermiso)
+      AccionesTarjeta(vm, estado, actual, tienePermiso)
       Hueco(12)
     }
   }
@@ -200,7 +229,7 @@ fun TarjetasScreen(vm: MasiViewModel, onVolver: () -> Unit, onLeer: () -> Unit) 
   if (confirmarBorrado) {
     AlertDialog(
       onDismissRequest = { confirmarBorrado = false },
-      title = { Text("¿Quitar \"${actual.palabra}\"?") },
+      title = { Text("¿Quitar \"${actual.comoSeEscribe}\"?") },
       text = {
         Text(
           "Dejará de aparecer para practicar. Solo quítala si ya la domina.",
@@ -222,13 +251,70 @@ fun TarjetasScreen(vm: MasiViewModel, onVolver: () -> Unit, onLeer: () -> Unit) 
   }
 }
 
+/**
+ * Vista general: todas las palabras a la vez, como cartas.
+ *
+ * Sustituye al recorrido de una en una. La diferencia no es estética: en la secuencia, el niño no
+ * tenía forma de saber cuántas palabras lleva ni cuáles son, y la cola es justamente el registro de
+ * su trabajo. Verlas juntas convierte una lista de fallos en algo que ha construido.
+ *
+ * Las que tocan hoy van primero —eso lo decide la repetición espaciada— y se marcan, pero **todas
+ * se pueden tocar**. La cola no cierra la puerta a nadie: si quiere practicar una que no toca hasta
+ * el jueves, adelante.
+ */
+@Composable
+private fun CuadriculaDeTarjetas(
+  cola: List<Tarjeta>,
+  tocanHoy: Int,
+  onAbrir: (Tarjeta) -> Unit,
+  onVolver: () -> Unit,
+) {
+  PantallaMasi(
+    encabezado =
+      if (tocanHoy > 0) "${cola.size} palabras · hoy tocan $tocanHoy"
+      else "${cola.size} palabras para practicar",
+    barraInferior = { BarraInferior(etiquetaCentro = "Salir", onCentro = onVolver) },
+  ) {
+    Column(modifier = Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally) {
+      Text(
+        text = "Toca una palabra para practicarla",
+        style = MaterialTheme.typography.bodyMedium,
+        textAlign = TextAlign.Center,
+        color = MaterialTheme.colorScheme.outline,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+      )
+      LazyVerticalGrid(
+        // Columnas adaptativas y no un número fijo: la misma pantalla tiene que servir en un
+        // teléfono estrecho y en uno grande sin que las cartas queden apretadas ni gigantes.
+        columns = GridCells.Adaptive(minSize = 150.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxSize(),
+      ) {
+        items(cola, key = { it.palabra }) { tarjeta ->
+          CartaPalabra(
+            palabra = tarjeta.comoSeEscribe,
+            silabas = tarjeta.silabas,
+            pictograma = tarjeta.pictograma.ifBlank { null },
+            nota = if (tarjeta.tocaHoy) "toca hoy" else null,
+            destacada = tarjeta.tocaHoy,
+            onClick = { onAbrir(tarjeta) },
+          )
+        }
+      }
+    }
+  }
+}
+
 @Composable
 private fun AccionesTarjeta(
   vm: MasiViewModel,
   estado: EstadoTarjeta,
-  palabra: String,
+  tarjeta: Tarjeta,
   tienePermiso: Boolean,
 ) {
+  val palabra = tarjeta.comoSeEscribe
   when (estado) {
     is EstadoTarjeta.Mostrando -> {
       LaunchedEffect(palabra) { vm.leerEnVozAlta("Lee esta palabra") }
@@ -239,7 +325,7 @@ private fun AccionesTarjeta(
           descripcion = stringResource(R.string.cd_escuchar_de_nuevo),
           color = AzulCalma,
           tamano = tamano,
-          onClick = { vm.deletrear(palabra) },
+          onClick = { vm.deletrear(palabra, tarjeta.definicion) },
         )
         BotonGrande(
           icono = Icons.Rounded.Mic,
@@ -285,7 +371,7 @@ private fun AccionesTarjeta(
           descripcion = stringResource(R.string.cd_escuchar_de_nuevo),
           color = AzulCalma,
           tamano = tamano,
-          onClick = { vm.deletrear(palabra) },
+          onClick = { vm.deletrear(palabra, tarjeta.definicion) },
         )
         // Reintentar la misma palabra con la pista delante es lo que enseña. Sin este botón, la
         // pista se decía y el niño pasaba de largo sin usarla nunca.
@@ -318,7 +404,7 @@ private fun AccionesTarjeta(
           descripcion = stringResource(R.string.cd_escuchar_de_nuevo),
           color = AzulCalma,
           tamano = tamano,
-          onClick = { vm.deletrear(palabra) },
+          onClick = { vm.deletrear(palabra, tarjeta.definicion) },
         )
         BotonGrande(
           icono = Icons.Rounded.Mic,

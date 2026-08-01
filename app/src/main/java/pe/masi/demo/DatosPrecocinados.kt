@@ -1,12 +1,18 @@
 package pe.masi.demo
 
 import kotlinx.coroutines.delay
+import pe.masi.datos.Cuento
 import pe.masi.servicios.ErrorLectura
 import pe.masi.servicios.Lectura
+import pe.masi.servicios.FiltroDeCuento
+import pe.masi.servicios.PasoCuento
 import pe.masi.servicios.PoliticaConservadora
+import pe.masi.servicios.ResultadoCuento
 import pe.masi.servicios.ResultadoEscucha
 import pe.masi.servicios.ResultadoLector
+import pe.masi.servicios.RevisionCuento
 import pe.masi.servicios.TipoError
+import pe.masi.servicios.VersionTexto
 
 /**
  * Modo demo: respuestas fijas, sin tocar el modelo.
@@ -56,6 +62,72 @@ object DatosPrecocinados {
       lectura = PoliticaConservadora.evaluar(textoEsperado, transcripcion),
     )
   }
+
+  /**
+   * Un cuento fijo, para que el recorrido completo funcione sin cargar el modelo.
+   *
+   * Se emite por trozos con la misma cadencia aproximada que el modelo real, porque lo que se está
+   * enseñando en la demo es precisamente que el cuento aparece mientras se escribe.
+   */
+  suspend fun escribirCuento(
+    alAvanzar: (PasoCuento) -> Unit = {},
+    alEscribir: (String) -> Unit = {},
+  ): ResultadoCuento {
+    alAvanzar(PasoCuento.ELIGIENDO_PALABRAS)
+    delay(2_000)
+    alAvanzar(PasoCuento.ESCRIBIENDO)
+
+    // Palabra a palabra, con la cadencia aproximada del modelo real: lo que se enseña en la demo es
+    // precisamente que el cuento aparece mientras se escribe.
+    val acumulado = StringBuilder()
+    for (palabra in RESPUESTA_DEMO.split(" ")) {
+      acumulado.append(palabra).append(' ')
+      alEscribir(acumulado.toString().trim())
+      delay(90)
+    }
+
+    alAvanzar(PasoCuento.GUARDANDO)
+    delay(1_500)
+
+    // **Pasa por el mismo camino que la ruta real**, igual que `leerPagina`. La versión anterior
+    // construía el `Cuento` a mano con su título ya puesto, así que la demo seguía funcionando
+    // aunque `FiltroDeCuento.partir` estuviera roto — y eso se descubriría delante del jurado, que
+    // es exactamente cuando no se quiere descubrir. Ahora, si el troceado del título falla, falla
+    // también aquí y se ve ensayando.
+    val crudo = FiltroDeCuento.partir(RESPUESTA_DEMO)
+    val revision =
+      FiltroDeCuento.revisar(crudo.titulo, crudo.texto, PALABRAS_DEMO) as RevisionCuento.Aceptado
+
+    return ResultadoCuento.Exito(
+      Cuento(
+        id = -1,
+        titulo = revision.titulo,
+        texto = revision.texto,
+        palabrasUsadas = PALABRAS_DEMO.joinToString(", "),
+      ),
+      Lectura.de(revision.texto, VersionTexto.CURADA),
+    )
+  }
+
+  private val SALTO = System.lineSeparator()
+
+  private val PALABRAS_DEMO = listOf("perro", "mercado")
+
+  /**
+   * Exactamente con la forma que devuelve el CUENTISTA de verdad: título en la primera línea, una
+   * línea en blanco, y después el cuento.
+   *
+   * El título habla del mercado porque el cuento ocurre en el mercado. Parece obvio, pero la versión
+   * anterior se titulaba "El perro de la chacra" y en el cuento no salía ninguna chacra: un descuido
+   * al escribirlo a mano que solo se nota leyéndolo entero, que es justo lo que hace un jurado.
+   */
+  private val RESPUESTA_DEMO =
+    "El perro perdido en el mercado" + SALTO + SALTO +
+      "Rosa vivía cerca del mercado, en un pueblo de la sierra. Cada mañana su perro la " +
+      "acompañaba a comprar pan. Un día el perro se perdió entre los puestos de fruta. " +
+      "Rosa lo buscó por todas partes y no lo encontraba. Entonces oyó un ladrido detrás " +
+      "de unas cajas. ¡Ahí estaba! El perro movía la cola muy contento. Rosa lo abrazó " +
+      "fuerte y volvieron juntos a casa."
 
   suspend fun explicar(error: ErrorLectura): String {
     delay(ESPERA_TUTOR_MS)

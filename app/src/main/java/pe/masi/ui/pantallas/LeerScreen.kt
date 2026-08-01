@@ -72,6 +72,9 @@ fun LeerScreen(vm: MasiViewModel, onEscuchar: () -> Unit, onVolver: () -> Unit) 
   val modoDemo by vm.modoDemo.collectAsStateWithLifecycle()
   val context = LocalContext.current
   val control = remember { ControlCamara() }
+  // El tamaño de la foto lo decide el perfil del teléfono: en uno apretado, 768 px en vez de
+  // 1024 es la diferencia entre procesarla y quedarse sin heap intentándolo.
+  LaunchedEffect(Unit) { control.ladoMaximo = vm.ladoMaximoFoto() }
 
   var tienePermiso by remember {
     mutableStateOf(

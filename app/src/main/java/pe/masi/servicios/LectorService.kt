@@ -76,22 +76,33 @@ class LectorService(private val motor: MotorMasi) {
         "Lee esta página."
       }
 
+    // El `try` NO es decorativo: `MotorMasi` propaga los fallos del motor como excepción, y
+    // `withTimeoutOrNull` solo se traga el timeout. Sin esto, un backend que revienta —el caso del
+    // moto g54— subía por `collect` hasta un `viewModelScope.launch` desnudo y **cerraba la app**
+    // en vez de pedir otra foto.
     val bruto =
-      withTimeoutOrNull(TIMEOUT_MS) {
-        val acumulado = StringBuilder()
-        var ultimoAviso = 0
-        motor.generar(rol = Rol.LECTOR, texto = instruccion, imagen = fotoPng).collect { trozo ->
-          acumulado.append(trozo)
-          // Contar espacios es una aproximación burda al número de palabras, pero es O(1) por
-          // trozo y lo único que importa es que la cifra suba: es una señal de vida, no una
-          // métrica.
-          val palabras = acumulado.count { it == ' ' }
-          if (palabras > ultimoAviso) {
-            ultimoAviso = palabras
-            onProgreso(palabras)
+      try {
+        withTimeoutOrNull(TIMEOUT_MS) {
+          val acumulado = StringBuilder()
+          var ultimoAviso = 0
+          motor.generar(rol = Rol.LECTOR, texto = instruccion, imagen = fotoPng).collect { trozo ->
+            acumulado.append(trozo)
+            // Contar espacios es una aproximación burda al número de palabras, pero es O(1) por
+            // trozo y lo único que importa es que la cifra suba: es una señal de vida, no una
+            // métrica.
+            val palabras = acumulado.count { it == ' ' }
+            if (palabras > ultimoAviso) {
+              ultimoAviso = palabras
+              onProgreso(palabras)
+            }
           }
+          acumulado.toString()
         }
-        acumulado.toString()
+      } catch (e: Throwable) {
+        // `Throwable` para cubrir también `OutOfMemoryError`. Devolver null lo convierte en `Fallo`,
+        // que es justo la señal que hace bajar de peldaño al backend.
+        Log.e(TAG, "El LECTOR falló", e)
+        null
       }
 
     if (bruto == null) {

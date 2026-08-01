@@ -8,6 +8,8 @@ package pe.masi.motor
  */
 object Prompts {
 
+  private const val SALTO = "\n"
+
   /**
    * Foto de una página → el texto que hay en ella. Temperatura 0.2: transcribir no es creativo.
    *
@@ -107,9 +109,11 @@ Ejemplo. Palabra "perro", el niño leyó "bero":
    * @param textoEsperado lo que estaba escrito y el niño debía leer.
    */
   fun turnoEscucha(textoEsperado: String): String =
-    """El niño debía leer exactamente esto: "${textoEsperado.trim()}"
+    """El niño debía leer esto: "${textoEsperado.trim()}"
 
-Escucha el audio y transcribe LITERALMENTE lo que el niño pronunció, con sus errores.
+Escucha el audio y escribe LITERALMENTE lo que pronunció, con sus errores.
+
+No copies la frase de arriba. No escribas nada después del JSON.
 
 Devuelve solo: {"dicho": "..."}"""
 
@@ -124,6 +128,182 @@ Devuelve solo: {"dicho": "..."}"""
 El niño leyó "$dicho".
 
 Anímalo y dale una pista para recordar cómo suena "$esperado"."""
+
+  /**
+   * El CUENTISTA: un cuento corto con las palabras que al niño le cuestan.
+   *
+   * **Nótese lo que NO hay: ni una sola lista de ejemplos.** La primera versión decía "ambientado en
+   * el Perú: la sierra, la costa, la selva, el mercado, la chacra, el colegio" y daba nombres a
+   * elegir, y el modelo las enumeró todas, una por frase, en orden:
+   *
+   * > Rosa fue a la sierra. Túpac fue al mercado. Killa vio el río. Manuel fue a la farm.
+   *
+   * Es el mismo error que ya se había cometido en [TUTOR] —está documentado ahí arriba— y se repitió
+   * aquí: **un modelo pequeño no distingue entre "usa este registro" y "nombra estas cosas"**. La
+   * lista de nombres propios es la peor de todas, porque le da un reparto y se siente obligado a
+   * sacarlos a todos.
+   *
+   * Ahora se describe la FORMA de un cuento —un protagonista, una cosa que le pasa— en vez de sus
+   * ingredientes. Y en español: aquel `farm` del ejemplo venía literalmente del prompt en inglés.
+   */
+  const val CUENTISTA =
+    """Escribes cuentos cortos para un niño peruano de 7 años que está aprendiendo a leer.
+
+Reglas del cuento:
+1. UN solo protagonista, un niño o una niña, con nombre peruano. Nadie más importa.
+2. Le pasa UNA sola cosa: un problema pequeño que resuelve al final.
+3. Ocurre en un lugar del Perú, y ese lugar se nota en lo que el niño ve y hace.
+4. Entre 80 y 120 palabras.
+5. Frases cortas. Palabras sencillas, salvo las que te pida practicar.
+6. Termina bien. Nada de miedo, peleas, ni tristeza.
+7. Escribe en español, y nada más que el título y el cuento. Sin explicaciones ni comentarios.
+
+Formato exacto de tu respuesta:
+- La PRIMERA línea es el título. De tres a cinco palabras. Sin punto final.
+- La segunda línea, en blanco.
+- A partir de la tercera, el cuento.
+
+Ejemplo:
+El nido de Rosa
+
+Rosa vivía cerca de la chacra de su abuelo. Cada mañana..."""
+
+  /**
+   * Arranques narrativos. Se elige UNO al azar, nunca se dan como lista.
+   *
+   * Esa distinción es la lección más cara de este archivo: una lista de ejemplos en el prompt hace
+   * que un modelo pequeño la enumere entera, una por frase. Pasó en [TUTOR] y volvió a pasar en el
+   * CUENTISTA — "Rosa fue a la sierra. Túpac fue al mercado. Killa vio el río." Dando uno solo, el
+   * modelo no tiene nada que enumerar.
+   *
+   * Y son el seguro de que dos cuentos seguidos salgan distintos. La semilla aleatoria del sampler
+   * debería bastar, pero medido en el Redmi **no bastaba**: con las mismas tres palabras el modelo
+   * devolvía el mismo cuento palabra por palabra. La sospecha es la decodificación especulativa
+   * (`MTP=true`), que al verificar contra el modelo borrador puede acabar siendo voraz. Cambiar la
+   * entrada, en cambio, cambia la salida pase lo que pase con el muestreo.
+   */
+  private val ARRANQUES =
+    listOf(
+      "Empieza una mañana temprano.",
+      "Empieza cuando ya está oscureciendo.",
+      "Empieza en medio de una lluvia fuerte.",
+      "Empieza un día de mucho sol.",
+      "Empieza cuando el protagonista se despierta tarde.",
+      "Empieza con el protagonista buscando algo que perdió.",
+      "Empieza con el protagonista ayudando a alguien de su familia.",
+      "Empieza con el protagonista yendo a un sitio al que no había ido nunca.",
+      "Empieza con el protagonista encontrando un animal.",
+      "Empieza con el protagonista llegando tarde a algún sitio.",
+      "Empieza con el protagonista cargando algo pesado.",
+      "Empieza con el protagonista escuchando un ruido raro.",
+    )
+
+  /**
+   * El encargo, con las palabras dentro.
+   *
+   * Van numeradas y **en orden aleatorio**: en un prompt de turno corto lo último pesa, así que
+   * rotarlas reparte el peso y de paso cambia la entrada entre una llamada y la siguiente.
+   */
+  fun turnoCuentista(palabras: List<String>): String {
+    val lista =
+      palabras.shuffled().mapIndexed { i, p -> "${i + 1}. $p" }.joinToString(separator = SALTO)
+    return """Escribe un cuento donde aparezcan estas palabras, repartidas de forma natural:
+
+$lista
+
+${ARRANQUES.random()}
+
+Recuerda: un protagonista, una cosa que le pasa, y termina bien."""
+  }
+
+  /**
+   * Segundo intento cuando el cuento se dejó palabras.
+   *
+   * Se le devuelve el cuento entero, no solo las que faltan: pedirle "añade estas dos palabras" sin
+   * contexto le hace escribir dos frases sueltas y pegarlas al final.
+   */
+  fun turnoCuentistaReintento(cuento: String, faltan: List<String>): String =
+    """Este cuento está bien, pero le faltan palabras:
+
+$cuento
+
+Reescríbelo entero, parecido pero incluyendo también: ${faltan.joinToString(", ")}.
+
+Escribe SOLO el cuento nuevo."""
+
+  /**
+   * El ENRIQUECEDOR: explica una palabra y le busca un dibujo. **El rol con herramientas.**
+   *
+   * En inglés, como el resto del protocolo con el modelo, por lo mismo que ya está medido: en
+   * español no llamaba a las herramientas. La definición y el ejemplo salen en español porque se le
+   * piden dentro.
+   *
+   * La instrucción que importa es la del reintento. Sin ella el modelo llama una vez, no encuentra
+   * nada y se rinde — y entonces la herramienta no aporta más que un `Map` en Kotlin. **Lo que se
+   * le pide aquí es exactamente lo que el código no puede hacer**: darse cuenta de que "estableció"
+   * trata de construir y volver a buscar con esa idea.
+   */
+  const val ENRIQUECEDOR =
+    """You help a 7-year-old Peruvian child understand a Spanish word they struggle to read.
+
+For EVERY word you MUST do these steps in order:
+
+1. Call `find_picture` with the word itself.
+
+2. If found is false, think about what the word MEANS and call `find_picture` again with a
+   simpler, more concrete everyday concept that represents it.
+   Examples of this reasoning:
+   - "estableció" is about building something new, so try "construir".
+   - "veloz" is about running fast, so try "correr".
+   - "chacra" is a piece of farmland, so try "campo".
+   You may try up to 3 times in total. Then stop looking.
+
+3. Call `save_explanation` with the definition and an example sentence, both in SPANISH:
+   - definition: ONE short sentence a 7-year-old understands. Do not repeat the word itself.
+   - example: ONE short everyday sentence that uses the word.
+
+Do NOT write anything outside of tool calls."""
+
+  /** El encargo del ENRIQUECEDOR cuando no hay dibujo todavía: toca buscarlo. */
+  fun turnoEnriquecedor(palabra: String): String = """The word is "$palabra". Start with step 1."""
+
+  /**
+   * El encargo cuando el dibujo **ya lo encontró el código**.
+   *
+   * La búsqueda exacta la resuelve un `Map` en microsegundos, así que hacérsela al modelo era gastar
+   * una ida y vuelta entera para llegar al mismo sitio. Aquí se le dice que ya está y salta directo
+   * a explicar. La herramienta de guardar sigue en juego: da salida estructurada sin parsear texto.
+   */
+  fun turnoEnriquecedorConDibujo(palabra: String): String =
+    """The word is "$palabra". The picture is already found, so SKIP steps 1 and 2.
+Go straight to step 3 and call `save_explanation`."""
+
+  /**
+   * Pide un título para un cuento ya escrito.
+   *
+   * Es una llamada aparte y muy corta —unos diez tokens de salida, un par de segundos— en vez de
+   * pedirle el título junto al cuento. Pedirlo todo de una vez obligaría a partir la respuesta por
+   * la primera línea, y ya sabemos cómo acaba eso: el modelo se salta el formato, el parser hace lo
+   * que puede y el fallo aparece en la biblioteca del niño.
+   *
+   * Los títulos ya usados van dentro para que no repita, pero la comprobación de verdad la hace SQL
+   * al volver: pedirle a un modelo que recuerde una lista no es una garantía.
+   */
+  fun turnoTitulo(cuento: String, yaUsados: List<String>): String {
+    val evitar =
+      if (yaUsados.isEmpty()) ""
+      else SALTO + SALTO + "No uses ninguno de estos: " + yaUsados.joinToString("; ") + "."
+    return """Lee este cuento:
+
+$cuento
+
+Escribe un título para él.
+
+Reglas:
+1. Como mucho CINCO palabras. Mejor tres.
+2. Que diga de qué va el cuento. No copies su primera frase.
+3. Solo el título, sin comillas, sin punto final, sin explicar nada.$evitar"""
+  }
 
   /** Reintento cuando el modelo devolvió algo que no era JSON. */
   fun reintentoJson(formaEsperada: String): String =

@@ -109,7 +109,24 @@ object DescargaModelo {
             }
           }
 
-          if (!parcial.renameTo(destino)) {
+          // **Verificar el tamaño antes de dar el archivo por bueno.**
+    //
+    // Si el servidor o un proxy cierra la conexión limpiamente a los 2,0 GB, `read` devuelve -1 sin
+    // lanzar nada: el bucle termina como si hubiera acabado bien. Antes se renombraba igual, y
+    // `ModeloLocal` solo exige 1,5 GB, así que un modelo truncado pasaba por bueno y reventaba
+    // dentro del motor con un fallo nativo imposible de diagnosticar.
+    if (totales > 0 && parcial.length() != totales) {
+      Log.w(TAG, "Descarga incompleta: ${parcial.length()} de $totales bytes")
+      emit(
+        ProgresoDescarga.Fallida(
+          "La descarga se cortó antes de terminar. Vuelve a intentarlo: se reanuda donde iba.",
+          recibidos = parcial.length(),
+        )
+      )
+      return@flow
+    }
+
+    if (!parcial.renameTo(destino)) {
             emit(ProgresoDescarga.Fallida("No se pudo guardar el modelo", recibidos))
             return@flow
           }

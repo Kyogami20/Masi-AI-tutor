@@ -66,12 +66,56 @@ class PoliticaConservadoraTest {
   }
 
   @Test
-  fun `no marca nada cuando hay demasiadas discrepancias`() {
-    // Tres o más diferencias significan que quien falló es el transcriptor, no el niño.
+  fun `tres fallos en una frase de seis SI se marcan`() {
+    // CAMBIO DE CRITERIO, y deliberado. El tope era un 2 fijo, así que esta lectura se descartaba
+    // entera: cero tarjetas y un "no te escuché bien" que era falso.
+    //
+    // Un niño con dificultades falla tres palabras de seis con toda naturalidad —es el perfil de
+    // usuario de esta app, no un caso raro— y tirar justo esas lecturas dejaba fuera precisamente
+    // las que más falta hacía practicar.
     val r = PoliticaConservadora.evaluar("el perro corre por el campo", "el bero torre pol el campo")
+
+    assertTrue(r.transcripcionFiable)
+    assertEquals(3, r.errores.size)
+  }
+
+  @Test
+  fun `pasada la mitad de la frase se sigue desconfiando`() {
+    // El tope no desaparece, escala. Por encima de la mitad de las palabras ya no se distingue un
+    // niño que lee muy mal de un transcriptor que no entendió nada, y marcar seis errores de golpe
+    // es lo peor que puede hacer una app que enseña a leer.
+    val r =
+      PoliticaConservadora.evaluar("el perro corre por el campo", "un gato salta bajo la nieve")
+
     assertTrue(r.errores.isEmpty())
     assertFalse(r.transcripcionFiable)
     assertTrue(r.descartados.all { it.motivo == Motivo.DEMASIADAS_DISCREPANCIAS })
+  }
+
+  @Test
+  fun `el tope nunca baja de tres`() {
+    // En frases muy cortas, la mitad serían una o dos palabras y volveríamos al problema de antes.
+    assertEquals(3, PoliticaConservadora.maxDiscrepancias(2))
+    assertEquals(3, PoliticaConservadora.maxDiscrepancias(6))
+    assertEquals(5, PoliticaConservadora.maxDiscrepancias(10))
+  }
+
+  @Test
+  fun `una transcripcion desbordada no se cree`() {
+    // La red bajo [LimpiadorDeEco]. Si llegan dieciséis palabras para una frase de cinco, no es el
+    // niño hablando de más: es el modelo divagando, y ese texto de sobra le da al alineador un
+    // camino más barato que el correcto, con lo que los errores de verdad se evaporan.
+    val r =
+      PoliticaConservadora.evaluar(
+        "mi libro de historias biblicas",
+        "mi cuaderno de historias biblicas y luego dijo otra cosa larguisima que no venia a cuento " +
+          "mi libro de historias biblicas",
+      )
+
+    assertTrue(r.errores.isEmpty())
+    assertFalse(r.transcripcionFiable)
+    assertTrue("y con dudas: no se puede felicitar por esto", r.hayDudas)
+    assertTrue(r.descartados.all { it.motivo == Motivo.TRANSCRIPCION_DESBORDADA })
   }
 
   @Test
@@ -104,6 +148,47 @@ class PoliticaConservadoraTest {
     val r = PoliticaConservadora.evaluar("la casa de piedra", "la casa te piedra")
     assertTrue(r.errores.isEmpty())
     assertEquals(Motivo.PALABRA_MUY_CORTA, r.descartados[0].motivo)
+  }
+
+  // --- "leyó bien" contra "no lo sé" ------------------------------------------------------------
+  //
+  // Esta distinción es la que sostiene todo el arreglo del ESCUCHA. Sin ella, `errores` vacío
+  // significaba dos cosas opuestas —leyó bien, o descarté todo lo que vi— y aguas abajo se
+  // interpretaba siempre como la primera.
+
+  @Test
+  fun `sustituir la palabra entera deja duda, no acierto`() {
+    // EL CASO REPORTADO, tal cual ocurrió en el teléfono: el texto decía "libro" y se leyó
+    // "cuaderno". Masi respondió "¡Muy bien!".
+    val r = PoliticaConservadora.evaluar("el niño abrió el libro", "el niño abrió el cuaderno")
+
+    assertTrue("sigue sin marcarse: una sola muestra no basta", r.errores.isEmpty())
+    assertEquals(Motivo.DISTANCIA_EXCESIVA, r.descartados.single().motivo)
+    assertTrue("descartar por distancia es duda, y la duda no se aplaude", r.hayDudas)
+  }
+
+  @Test
+  fun `el acento andino NO deja duda`() {
+    // La otra mitad, y pesa igual: un niño que dice "pilota" leyó bien. Mandarle repetir sería
+    // castigarle el habla, que es justo el daño que este proyecto existe para no causar.
+    val r = PoliticaConservadora.evaluar("la pelota roja", "la pilota roja")
+
+    assertTrue(r.errores.isEmpty())
+    assertEquals(Motivo.VARIACION_ANDINA, r.descartados.single().motivo)
+    assertFalse("una variación de acento no es una duda", r.hayDudas)
+  }
+
+  @Test
+  fun `una palabra corta tampoco deja duda`() {
+    val r = PoliticaConservadora.evaluar("la casa de piedra", "la casa te piedra")
+    assertFalse(r.hayDudas)
+  }
+
+  @Test
+  fun `leer bien no deja ni errores ni dudas`() {
+    val r = PoliticaConservadora.evaluar("la casa de piedra", "la casa de piedra")
+    assertTrue(r.errores.isEmpty())
+    assertFalse(r.hayDudas)
   }
 
   // --- funciones auxiliares --------------------------------------------------------------------

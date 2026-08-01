@@ -33,6 +33,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 private const val TAG = "MasiCamara"
@@ -50,8 +51,31 @@ const val LADO_MAXIMO_FOTO = 1024
 class ControlCamara {
   internal var imageCapture: ImageCapture? = null
 
+  /**
+   * Un solo hilo para toda la sesión de cámara, y se apaga al salir.
+   *
+   * Antes se creaba un `Executors.newSingleThreadExecutor()` **dentro de cada disparo** y no se
+   * apagaba nunca: cada foto dejaba un hilo vivo para siempre. Diez fotos, diez hilos colgados en un
+   * teléfono que ya va justo de memoria.
+   */
+  private val hilo: ExecutorService = Executors.newSingleThreadExecutor()
+
+  /**
+   * Lado máximo de la foto que se manda al modelo. Lo fija el perfil del teléfono.
+   *
+   * En un aparato apretado, bajarlo de 1024 a 768 es la diferencia entre procesar la foto y quedarse
+   * sin heap intentándolo.
+   */
+  @Volatile var ladoMaximo: Int = LADO_MAXIMO_FOTO
+
   val listo: Boolean
     get() = imageCapture != null
+
+  /** Se llama al salir de la pantalla de cámara. Sin esto el hilo queda vivo. */
+  fun soltar() {
+    hilo.shutdown()
+    imageCapture = null
+  }
 
   /**
    * Dispara la foto y devuelve los bytes PNG ya rotados y reescalados.
@@ -67,13 +91,16 @@ class ControlCamara {
       return
     }
     captura.takePicture(
-      Executors.newSingleThreadExecutor(),
+      hilo,
       object : ImageCapture.OnImageCapturedCallback() {
         override fun onCaptureSuccess(image: ImageProxy) {
           try {
-            val bitmap = image.toBitmap().rotar(image.imageInfo.rotationDegrees).reescalar()
-            onFoto(bitmap.aPng())
-          } catch (e: Exception) {
+            onFoto(procesar(image, ladoMaximo))
+          } catch (e: Throwable) {
+            // `Throwable` y NO `Exception`: quedarse en `Exception` dejaba escapar
+            // `OutOfMemoryError`, que es un `Error`. Y esta es precisamente la parte de la app con
+            // más probabilidad de quedarse sin heap, así que el fallo que no se capturaba era justo
+            // el que más iba a pasar — y tiraba la app entera en vez de pedir otra foto.
             Log.e(TAG, "Falló el procesado de la foto", e)
             onFoto(null)
           } finally {
@@ -115,8 +142,13 @@ fun VistaCamara(control: ControlCamara, modifier: Modifier = Modifier) {
     // Se pide una resolución alta: la letra de un libro de primaria no perdona.
     val estrategia =
       ResolutionStrategy(
-        Size(1536, 2048),
-        ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+        Size(1200, 1600),
+        // Antes se prefería SUBIR (`CLOSEST_HIGHER_THEN_LOWER`) pidiendo 1536x2048. En muchos
+        // teléfonos las resoluciones disponibles saltan de ~1440x1080 a 4000x3000, así que "la más
+        // cercana por arriba" acababa capturando 12 o 16 megapíxeles: unos 49 MB de bitmap para una
+        // foto que después se reduce a 1024 px de lado. Se pagaba el pico de memoria de una imagen
+        // que no se usa. Ahora se prefiere bajar.
+        ResolutionStrategy.FALLBACK_RULE_CLOSEST_LOWER_THEN_HIGHER,
       )
     ImageCapture.Builder()
       .setResolutionSelector(
@@ -193,6 +225,32 @@ private class VigilanteRotacion(context: Context, private val captura: ImageCapt
         else -> Surface.ROTATION_0
       }
     if (captura.targetRotation != rotacion) captura.targetRotation = rotacion
+  }
+}
+
+/**
+ * De `ImageProxy` a PNG, **reciclando cada bitmap en cuanto deja de hacer falta**.
+ *
+ * La cadena `toBitmap().rotar().reescalar()` dejaba tres bitmaps vivos a la vez esperando al
+ * recolector. Con una cámara de 12 MP en ARGB_8888 son unos 49 MB cada uno de los dos primeros: cien
+ * megas de pico en un teléfono cuyo heap puede ser de 128. El recolector de Java no llega a tiempo;
+ * `recycle()` devuelve esa memoria en el acto.
+ *
+ * La comparación por identidad importa: `rotar` y `reescalar` devuelven **el mismo objeto** cuando
+ * no hay nada que hacer, y reciclar el bitmap que se está a punto de comprimir sí rompe.
+ */
+private fun procesar(image: ImageProxy, ladoMaximo: Int): ByteArray {
+  val crudo = image.toBitmap()
+  var rotado: Bitmap? = null
+  var pequeno: Bitmap? = null
+  return try {
+    rotado = crudo.rotar(image.imageInfo.rotationDegrees)
+    pequeno = rotado.reescalar(ladoMaximo)
+    pequeno.aPng()
+  } finally {
+    if (pequeno !== rotado) pequeno?.recycle()
+    if (rotado !== crudo) rotado?.recycle()
+    crudo.recycle()
   }
 }
 

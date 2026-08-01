@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import pe.masi.MasiApplication
+import pe.masi.datos.Cuento
 import pe.masi.datos.Tarjeta
 import pe.masi.demo.DatosPrecocinados
 import pe.masi.descarga.DescargaModelo
@@ -28,9 +29,16 @@ import pe.masi.media.recortar
 import pe.masi.motor.EstadoModelo
 import pe.masi.motor.EstadoMotor
 import pe.masi.motor.ModeloLocal
+import pe.masi.diagnostico.CajaNegra
+import pe.masi.diagnostico.Escuchado
 import pe.masi.motor.OrdenContenido
-import pe.masi.servicios.ErrorLectura
+import pe.masi.motor.PreferenciaDeMotor
 import pe.masi.servicios.Lectura
+import pe.masi.servicios.PasoCuento
+import pe.masi.servicios.ResultadoCuento
+import pe.masi.servicios.VersionTexto
+import pe.masi.servicios.PalabraFallada
+import pe.masi.servicios.RepasoService
 import pe.masi.servicios.Repaso
 import pe.masi.servicios.ResultadoLector
 import pe.masi.servicios.Silabas
@@ -68,6 +76,27 @@ sealed interface EstadoLeer {
   data object Repetir : EstadoLeer
 }
 
+/**
+ * Una palabra fallada, ya con el destino que tuvo en la cola de repaso.
+ *
+ * Junta lo que dice el evaluador con lo que dijo la base de datos, para que la pantalla pueda
+ * mostrar de un vistazo cuáles son nuevas y cuáles ya se estaban practicando.
+ */
+data class PalabraEnPantalla(val palabra: PalabraFallada, val guardado: RepasoService.Guardado) {
+  val escritura: String
+    get() = palabra.escritura
+
+  val silabas: String
+    get() = palabra.silabas
+
+  val pista: String
+    get() = palabra.pista
+
+  /** Ya la estaba practicando: se le dice, y no se crea una segunda tarjeta ni se le baja el nivel. */
+  val yaEstaba: Boolean
+    get() = guardado == RepasoService.Guardado.YA_ESTABA
+}
+
 /** Qué está pasando en la pantalla de Escuchar. */
 sealed interface EstadoEscuchar {
   data object Esperando : EstadoEscuchar
@@ -79,13 +108,21 @@ sealed interface EstadoEscuchar {
   /** Leyó bien. Celebración y a la siguiente. */
   data object Bien : EstadoEscuchar
 
+  /**
+   * Una o varias palabras salieron distintas.
+   *
+   * Es una lista porque en una oración se puede fallar más de una palabra, y antes solo se
+   * enseñaba —y se guardaba— la primera. La primera de la lista es además la que se practica al
+   * pulsar "Otra vez", por ser la que trae la pista recién hecha por el TUTOR.
+   */
   data class ConPista(
-    val error: ErrorLectura,
-    val pista: String,
-    val silabas: String,
+    val palabras: List<PalabraEnPantalla>,
     /** true si el niño acaba de reintentar esta misma palabra y volvió a salir distinta. */
     val esReintento: Boolean = false,
-  ) : EstadoEscuchar
+  ) : EstadoEscuchar {
+    val principal: PalabraEnPantalla
+      get() = palabras.first()
+  }
 
   /** El niño acertó al reintentar la palabra que había fallado. */
   data class PalabraLograda(val palabra: String) : EstadoEscuchar
@@ -122,6 +159,35 @@ sealed interface EstadoTarjeta {
   data object Repetir : EstadoTarjeta
 }
 
+/**
+ * Qué está pasando en la pantalla de Cuentos.
+ *
+ * Generar un cuento son treinta y pico segundos, así que [Escribiendo] lleva el texto parcial: ver
+ * el cuento aparecer es la diferencia entre "está pensando" y "se colgó".
+ */
+sealed interface EstadoCuentos {
+  data object Biblioteca : EstadoCuentos
+
+  /**
+   * Por qué paso va, y lo que lleva escrito hasta ahora.
+   *
+   * Las dos cosas, no una: cuando `parcial` se dejaba en blanco al cambiar de paso, el cuento
+   * desaparecía de la pantalla con la animación girando y parecía que todo volvía a empezar.
+   */
+  data class Escribiendo(
+    val paso: PasoCuento = PasoCuento.ELIGIENDO_PALABRAS,
+    val parcial: String = "",
+  ) : EstadoCuentos
+
+  data class Listo(val cuento: Cuento) : EstadoCuentos
+
+  /** El modelo escribió algo que no se le puede enseñar a un niño. Se ofrece reintentar. */
+  data class NoSirve(val mensaje: String) : EstadoCuentos
+
+  /** Todavía no hay palabras falladas con las que hacer un cuento. */
+  data object SinPalabras : EstadoCuentos
+}
+
 /** Estado de la provisión del modelo, antes de que la app pueda hacer nada. */
 sealed interface EstadoArranque {
   data object Comprobando : EstadoArranque
@@ -131,6 +197,9 @@ sealed interface EstadoArranque {
   data class Trayendo(val fraccion: Float, val recibidos: Long, val totales: Long) : EstadoArranque
 
   data class NoSePudo(val mensaje: String) : EstadoArranque
+
+  /** El archivo está en el teléfono pero el motor no se ha encendido todavía, y es a propósito. */
+  data object ModeloListo : EstadoArranque
 
   data object Encendiendo : EstadoArranque
 
@@ -167,6 +236,60 @@ class MasiViewModel(app: Application) : AndroidViewModel(app) {
     contenedor.preferencias.ordenContenido
       .map { runCatching { OrdenContenido.valueOf(it) }.getOrDefault(OrdenContenido.GALLERY) }
       .stateIn(viewModelScope, SharingStarted.Eagerly, OrdenContenido.GALLERY)
+
+  // --- Compatibilidad ---------------------------------------------------------------------------
+
+  val preferenciaMotor: StateFlow<PreferenciaDeMotor> =
+    contenedor.preferencias.preferenciaMotor
+      .map {
+        runCatching { PreferenciaDeMotor.valueOf(it) }.getOrDefault(PreferenciaDeMotor.AUTOMATICO)
+      }
+      .stateIn(viewModelScope, SharingStarted.Eagerly, PreferenciaDeMotor.AUTOMATICO)
+
+  /**
+   * El informe que un adulto puede mandar por WhatsApp.
+   *
+   * Se recalcula al vuelo y no se cachea: la memoria libre cambia, y el dato que interesa es el de
+   * ahora mismo.
+   */
+  fun informeDelTelefono(): String {
+    val backend =
+      when (val e = contenedor.motor.estado.value) {
+        is EstadoMotor.Listo -> "${e.peldano.texto} (${e.peldano.descripcion})"
+        is EstadoMotor.Cargando -> "encendiendo"
+        is EstadoMotor.SinModelo -> "sin modelo"
+        is EstadoMotor.Error -> "no arrancó: ${e.mensaje}"
+      }
+    val perfil = contenedor.motor.presupuesto.perfil.nombreParaAdulto
+    return CajaNegra.huella(getApplication(), backend, perfil)
+  }
+
+  /**
+   * La última vez que Masi comparó lo leído con lo oído.
+   *
+   * Se enseña en Ajustes y **no entra en [informeDelTelefono]**: ese informe se comparte, y esto es
+   * la voz de un niño. Ver [pe.masi.diagnostico.Escuchado].
+   */
+  fun ultimaEscucha(): Escuchado? = CajaNegra.ultimaEscucha
+
+  /**
+   * Cambia el reparto GPU/CPU y **recarga el motor** para que tenga efecto.
+   *
+   * Recargar es la parte que importa. El parche del que salió esta idea guardaba la preferencia y no
+   * tocaba el motor, así que el ajuste no hacía nada hasta reiniciar la app — y quien lo pulsaba
+   * concluía, con razón, que no servía.
+   */
+  fun ponerPreferenciaDeMotor(valor: PreferenciaDeMotor) {
+    viewModelScope.launch {
+      contenedor.preferencias.ponerPreferenciaMotor(valor.name)
+      valor.peldanoFijo()?.let { contenedor.motor.fijarPeldano(it) }
+      contenedor.motor.soltar()
+      encenderMotor()
+    }
+  }
+
+  /** El lado máximo de foto que aguanta este teléfono. Lo consulta la pantalla de cámara. */
+  fun ladoMaximoFoto(): Int = contenedor.motor.presupuesto.ladoMaximoFoto
 
   fun comprobarModelo() {
     viewModelScope.launch {
@@ -226,7 +349,16 @@ class MasiViewModel(app: Application) : AndroidViewModel(app) {
       is ProgresoDescarga.EnCurso ->
         _arranque.value =
           EstadoArranque.Trayendo(progreso.fraccion, progreso.recibidos, progreso.totales)
-      is ProgresoDescarga.Terminada -> encenderMotor()
+      // **NO se enciende el motor aquí.**
+      //
+      // Esto fue lo que cerraba la app en el Galaxy A14: acabar de escribir 2,6 GB y pedir en el
+      // mismo segundo 2,6 GB de RAM, con la caché de páginas del kernel llena y el sistema en su
+      // peor momento. El equipo lo vivía como "se cierra al descargar", y la descarga no tenía
+      // nada que ver.
+      //
+      // Ahora se avisa de que está listo y es el adulto quien pulsa. Esos segundos le bastan al
+      // sistema para soltar la caché.
+      is ProgresoDescarga.Terminada -> _arranque.value = EstadoArranque.ModeloListo
       is ProgresoDescarga.Fallida -> _arranque.value = EstadoArranque.NoSePudo(progreso.mensaje)
     }
   }
@@ -269,16 +401,35 @@ class MasiViewModel(app: Application) : AndroidViewModel(app) {
             _leer.value = EstadoLeer.Mirando(palabras)
           }
 
+      // Al niño se le dice lo mismo en los dos casos —"vamos a intentarlo otra vez"— pero por
+      // dentro NO son lo mismo, y confundirlos costó que un moto g54 fuera inservible sin que nadie
+      // supiera por qué. Ver `VigilanteDeBackend`.
       _leer.value =
         when (resultado) {
           is ResultadoLector.Exito -> {
+            contenedor.motor.anotarLecturaCorrecta()
             prepararEscucha(resultado.lectura)
             EstadoLeer.Leida(resultado.lectura)
           }
-          // Ambos casos se le presentan al niño igual: "vamos a intentarlo otra vez". Distinguir
-          // entre "foto borrosa" y "falló el modelo" solo le sirve a quien depura.
-          is ResultadoLector.NoSeEntiende -> EstadoLeer.Repetir
-          is ResultadoLector.Fallo -> EstadoLeer.Repetir
+
+          // El modelo respondió bien a una foto mala. No dice nada del acelerador gráfico.
+          is ResultadoLector.NoSeEntiende -> {
+            contenedor.motor.anotarFotoIlegible()
+            EstadoLeer.Repetir
+          }
+
+          // El motor no respondió: agotó el tiempo o devolvió algo imposible de parsear dos veces.
+          // Esa es la firma de un backend que no puede con esta tarea.
+          is ResultadoLector.Fallo -> {
+            val bajado = contenedor.motor.anotarFalloDelModelo()
+            if (bajado != null) {
+              contenedor.preferencias.ponerPeldanoAprendido(bajado.name)
+              contenedor.voz.decir(
+                "Voy a intentarlo de otra manera. Puede tardar un poquito más."
+              )
+            }
+            EstadoLeer.Repetir
+          }
         }
     }
   }
@@ -299,8 +450,18 @@ class MasiViewModel(app: Application) : AndroidViewModel(app) {
   }
 
   /** Dice la palabra entera y luego la repite despacio. Nunca la deletrea. */
-  fun deletrear(palabra: String) {
+  /**
+   * Dice la palabra despacio y, si la hay, su definición a continuación.
+   *
+   * La definición se lee **después** y no antes: lo que el niño tiene que retener es cómo suena la
+   * palabra, y oírla primero deja el sonido como ancla. La explicación viene a reforzarlo.
+   *
+   * Para un niño que todavía no lee bien, oír qué significa vale tanto como ver el dibujo: los dos
+   * atacan lo mismo, que la palabra deje de ser una hilera de letras sin sentido.
+   */
+  fun deletrear(palabra: String, definicion: String = "") {
     contenedor.voz.decirPalabra(palabra)
+    if (definicion.isNotBlank()) contenedor.voz.encolar(definicion)
   }
 
   // --- Escuchar --------------------------------------------------------------------------------
@@ -336,6 +497,8 @@ class MasiViewModel(app: Application) : AndroidViewModel(app) {
   private fun prepararEscucha(lectura: Lectura) {
     _unidades.value = lectura.fragmentos
     _indice.value = 0
+    // Página nueva, dudas a cero: lo que se oyó mal ayer no dice nada de la frase de hoy.
+    contenedor.evaluador.olvidarDudas()
     nuevasEnSesion = 0
     _practicando.value = null
     _escuchar.value = EstadoEscuchar.Esperando
@@ -371,11 +534,17 @@ class MasiViewModel(app: Application) : AndroidViewModel(app) {
       }
   }
 
-  /** "Ahora leela tu": vuelve a grabar, pero solo la palabra que fallo. */
-  fun practicarPalabraFallada() {
-    val error = (_escuchar.value as? EstadoEscuchar.ConPista)?.error ?: return
+  /**
+   * "Ahora leela tu": vuelve a grabar, pero solo una palabra.
+   *
+   * Si en la oración falló más de una, se reintenta la primera: es la única que trae pista recién
+   * hecha por el TUTOR, y pedirle a un niño que repita tres palabras seguidas después de
+   * equivocarse es pedirle demasiado. Las demás ya están guardadas y volverán en Practicar.
+   */
+  fun practicarPalabraFallada(escritura: String? = null) {
+    val estado = _escuchar.value as? EstadoEscuchar.ConPista ?: return
     contenedor.voz.callar()
-    _practicando.value = error.esperado
+    _practicando.value = escritura ?: estado.principal.escritura
     _escuchar.value = EstadoEscuchar.Esperando
   }
 
@@ -417,24 +586,20 @@ class MasiViewModel(app: Application) : AndroidViewModel(app) {
         }
 
       is Veredicto.Falla -> {
-        _escuchar.value =
-          EstadoEscuchar.ConPista(
-            veredicto.error,
-            veredicto.pista,
-            veredicto.silabas,
-            esReintento = esPractica,
-          )
-        contenedor.voz.decir(veredicto.pista)
+        // Se guardan TODAS las palabras falladas de la oración, no solo la primera. El servicio
+        // deduplica contra lo que ya se está practicando y respeta el cupo de la sesión.
+        val guardados = contenedor.repaso.guardarFallos(veredicto.palabras, nuevasEnSesion)
+        nuevasEnSesion += guardados.count { it == RepasoService.Guardado.CREADA }
 
-        if (nuevasEnSesion < Repaso.MAX_NUEVAS_POR_SESION) {
-          val creada =
-            contenedor.repaso.guardarFallo(
-              veredicto.error.esperado,
-              veredicto.silabas,
-              veredicto.pista,
-            )
-          if (creada) nuevasEnSesion++
-        }
+        val enPantalla =
+          veredicto.palabras.zip(guardados) { palabra, guardado ->
+            PalabraEnPantalla(palabra, guardado)
+          }
+        _escuchar.value = EstadoEscuchar.ConPista(enPantalla, esReintento = esPractica)
+
+        // Se dice en voz alta solo la pista de la primera: es la única recién hecha por el TUTOR, y
+        // encadenar dos o tres explicaciones seguidas satura a un niño que acaba de equivocarse.
+        contenedor.voz.decir(enPantalla.first().pista)
       }
     }
   }
@@ -502,7 +667,62 @@ class MasiViewModel(app: Application) : AndroidViewModel(app) {
   private val _estadoTarjeta = MutableStateFlow<EstadoTarjeta>(EstadoTarjeta.Mostrando)
   val estadoTarjeta: StateFlow<EstadoTarjeta> = _estadoTarjeta.asStateFlow()
 
+  /**
+   * Si se está viendo la cuadrícula (false) o practicando una tarjeta concreta (true).
+   *
+   * La cuadrícula es la entrada por defecto: ver todas sus palabras a la vez le enseña al niño lo
+   * que lleva trabajado, cosa que la secuencia de una en una escondía. Elegir cuál practicar
+   * también es suyo.
+   */
+  private val _practicandoTarjeta = MutableStateFlow(false)
+  val practicandoTarjeta: StateFlow<Boolean> = _practicandoTarjeta.asStateFlow()
+
+  /**
+   * Le pide al ENRIQUECEDOR una definición y un dibujo para las tarjetas que no los tengan.
+   *
+   * Va de una en una y en segundo plano, sin bloquear nada: si el niño practica mientras tanto, el
+   * cerrojo del motor serializa las llamadas y como mucho una tarda un poco más. **Tolera fallar**
+   * — sin enriquecimiento la tarjeta se ve como siempre — así que no hay estado de error en la
+   * interfaz ni hace falta avisar de nada.
+   */
+  fun enriquecerPendientes() {
+    if (trabajoEnriquecer?.isActive == true) return
+    trabajoEnriquecer =
+      viewModelScope.launch {
+        if (modoDemo.value) return@launch
+        val pendientes = contenedor.repaso.sinEnriquecer().take(MAX_ENRIQUECER_POR_VEZ)
+        for (tarjeta in pendientes) {
+          val resultado = contenedor.enriquecedor.enriquecer(tarjeta.comoSeEscribe) ?: continue
+          contenedor.repaso.guardarEnriquecimiento(
+            clave = tarjeta.palabra,
+            definicion = resultado.definicion,
+            ejemplo = resultado.ejemplo,
+            pictograma = resultado.pictograma,
+          )
+        }
+        // La cuadrícula lee de la base, así que se recarga para que aparezcan los dibujos.
+        cargarRepaso()
+      }
+  }
+
+  /** Abre una tarjeta concreta desde la cuadrícula. */
+  fun abrirTarjeta(tarjeta: Tarjeta) {
+    val posicion = _cola.value.indexOfFirst { it.palabra == tarjeta.palabra }
+    if (posicion < 0) return
+    cancelarGrabacionTarjeta()
+    _indiceTarjeta.value = posicion
+    _tarjetaActual.value = _cola.value[posicion]
+    _practicandoTarjeta.value = true
+  }
+
+  /** Vuelve de una tarjeta a la vista general. */
+  fun volverALaCuadricula() {
+    cancelarGrabacionTarjeta()
+    _practicandoTarjeta.value = false
+  }
+
   private var trabajoTarjeta: Job? = null
+  private var trabajoEnriquecer: Job? = null
 
   fun cargarRepaso() {
     viewModelScope.launch {
@@ -512,13 +732,15 @@ class MasiViewModel(app: Application) : AndroidViewModel(app) {
       _indiceTarjeta.value = 0
       _tarjetaActual.value = todas.firstOrNull()
       _estadoTarjeta.value = EstadoTarjeta.Mostrando
+      _practicandoTarjeta.value = false
     }
   }
 
   /** "Léela tú": graba la palabra de la tarjeta. Clip corto, que es una sola palabra. */
   fun grabarTarjeta() {
     if (grabador.estaGrabando) return
-    val palabra = _tarjetaActual.value?.palabra ?: return
+    // La ortografía real, no la clave: es lo que se le muestra al ESCUCHA como texto esperado.
+    val palabra = _tarjetaActual.value?.comoSeEscribe ?: return
     contenedor.voz.callar()
     _estadoTarjeta.value = EstadoTarjeta.Grabando
 
@@ -561,10 +783,13 @@ class MasiViewModel(app: Application) : AndroidViewModel(app) {
       }
 
       is Veredicto.Falla -> {
+        // Una tarjeta es una sola palabra, así que la lista trae exactamente un elemento.
+        //
         // La pista se recalcula con el error de HOY, que no tiene por qué ser el del día que se
         // creó la tarjeta: la guardada puede hablar de una confusión que ya superó.
-        _estadoTarjeta.value = EstadoTarjeta.ConPista(veredicto.pista)
-        contenedor.voz.decir(veredicto.pista)
+        val pista = veredicto.palabras.first().pista
+        _estadoTarjeta.value = EstadoTarjeta.ConPista(pista)
+        contenedor.voz.decir(pista)
       }
     }
   }
@@ -644,6 +869,98 @@ class MasiViewModel(app: Application) : AndroidViewModel(app) {
       contenedor.repaso.olvidar(actual.palabra)
       cargarRepaso()
     }
+  }
+
+  // --- Cuentos ---------------------------------------------------------------------------------
+
+  val cuentos: StateFlow<List<Cuento>> =
+    contenedor.repaso.todosLosCuentos().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+  private val _estadoCuentos = MutableStateFlow<EstadoCuentos>(EstadoCuentos.Biblioteca)
+  val estadoCuentos: StateFlow<EstadoCuentos> = _estadoCuentos.asStateFlow()
+
+  private var trabajoCuento: Job? = null
+
+  /**
+   * Lanza el bucle agéntico: el modelo pide las palabras, escribe, comprueba y guarda.
+   *
+   * Puede tardar un minuto largo, así que el texto parcial se va publicando para la animación.
+   */
+  fun escribirCuento() {
+    if (trabajoCuento?.isActive == true) return
+    contenedor.voz.callar()
+    _estadoCuentos.value = EstadoCuentos.Escribiendo()
+
+    trabajoCuento =
+      viewModelScope.launch {
+        // El callback llega desde el hilo del motor: asignar el valor de un StateFlow es seguro
+        // entre hilos, así que no hace falta saltar al principal.
+        // El texto que lleva escrito NO se pierde al cambiar de paso.
+        //
+        // La versión anterior hacía `Escribiendo(paso)` y `parcial` tomaba su valor por defecto, que
+        // es la cadena vacía. Resultado: cada cambio de paso borraba el cuento de la pantalla y
+        // dejaba la animación girando, y desde fuera parecía que se había perdido todo y volvía a
+        // empezar. Aquí lo que cambia es el paso; el texto se conserva.
+        var pasoActual = PasoCuento.ELIGIENDO_PALABRAS
+        var textoActual = ""
+        val avanzar: (PasoCuento) -> Unit = { paso ->
+          pasoActual = paso
+          _estadoCuentos.value = EstadoCuentos.Escribiendo(paso, textoActual)
+        }
+        val escribir: (String) -> Unit = { parcial ->
+          textoActual = parcial
+          _estadoCuentos.value = EstadoCuentos.Escribiendo(pasoActual, parcial)
+        }
+        val resultado =
+          if (modoDemo.value) DatosPrecocinados.escribirCuento(avanzar, escribir)
+          else contenedor.cuentista.escribir(avanzar, escribir)
+
+        _estadoCuentos.value =
+          when (resultado) {
+            is ResultadoCuento.Exito -> {
+              // El cuento entra en la pantalla de Escuchar igual que una página fotografiada.
+              prepararEscucha(resultado.lectura)
+              EstadoCuentos.Listo(resultado.cuento)
+            }
+            is ResultadoCuento.SinPalabras -> EstadoCuentos.SinPalabras
+            is ResultadoCuento.NoSirve ->
+              EstadoCuentos.NoSirve("Este cuento no me salió bien. ¿Probamos otra vez?")
+            is ResultadoCuento.NoSePudo ->
+              EstadoCuentos.NoSirve("No pude escribir el cuento. ¿Probamos otra vez?")
+          }
+      }
+  }
+
+  /** Abre un cuento ya guardado. No toca el modelo: por eso se puede leer sin él cargado. */
+  fun abrirCuento(cuento: Cuento) {
+    contenedor.voz.callar()
+    prepararEscucha(Lectura.de(cuento.texto, VersionTexto.CURADA))
+    _estadoCuentos.value = EstadoCuentos.Listo(cuento)
+  }
+
+  fun volverALaBiblioteca() {
+    trabajoCuento?.cancel()
+    trabajoCuento = null
+    contenedor.voz.callar()
+    _estadoCuentos.value = EstadoCuentos.Biblioteca
+  }
+
+  fun borrarCuento(cuento: Cuento) {
+    viewModelScope.launch {
+      contenedor.repaso.borrarCuento(cuento.id)
+      _estadoCuentos.value = EstadoCuentos.Biblioteca
+    }
+  }
+
+  private companion object {
+    /**
+     * Cuántas tarjetas se enriquecen de una tacada.
+     *
+     * Cada una son ~15 s de modelo. Hacerlas todas de golpe dejaría el motor ocupado justo cuando
+     * el niño quiere practicar, y el cerrojo lo haría esperar. Se van completando en visitas
+     * sucesivas a la pantalla.
+     */
+    const val MAX_ENRIQUECER_POR_VEZ = 3
   }
 
   // --- Ajustes ---------------------------------------------------------------------------------

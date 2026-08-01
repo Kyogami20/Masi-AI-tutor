@@ -1,24 +1,61 @@
 package pe.masi.servicios
 
 /** Por qué una discrepancia detectada NO se le enseña al niño. */
-enum class Motivo {
+/**
+ * Por qué no se marcó una discrepancia. **No todos significan lo mismo, y confundirlos fue un fallo
+ * grave.**
+ *
+ * Hay dos familias, y la diferencia es de significado, no de implementación:
+ *
+ *  - **"No es un error"**: la discrepancia se explica y el niño leyó bien. Felicitarlo es correcto.
+ *  - **"No lo sé"**: hay una diferencia real y no sabemos de quién es la culpa. Aquí no se puede
+ *    marcar nada —sería inventar un error— pero **tampoco se puede felicitar**.
+ *
+ * Durante mucho tiempo se trataron igual, y el resultado fue que un niño que leyó "cuaderno" donde
+ * decía "libro" recibía un "¡Muy bien!": la sustitución se descartaba por [DISTANCIA_EXCESIVA] y la
+ * lista de errores quedaba vacía, que aguas abajo se leía como acierto.
+ *
+ * @param esDuda si el descarte significa incertidumbre y no lectura correcta.
+ */
+enum class Motivo(val esDuda: Boolean) {
   /** No llegó transcripción, o el JSON del modelo no se pudo parsear. */
-  TRANSCRIPCION_VACIA,
+  TRANSCRIPCION_VACIA(esDuda = true),
 
   /** El niño leyó bastante menos de lo escrito: se cortó, o se cortó la grabación. */
-  LECTURA_INCOMPLETA,
+  LECTURA_INCOMPLETA(esDuda = true),
 
   /** Tantas diferencias que lo más probable es que falle la transcripción, no el niño. */
-  DEMASIADAS_DISCREPANCIAS,
+  DEMASIADAS_DISCREPANCIAS(esDuda = true),
 
-  /** Lo dicho no se parece en nada a lo esperado: eso no es un error de lectura. */
-  DISTANCIA_EXCESIVA,
+  /**
+   * Llegó mucho más texto del que cabía en la frase.
+   *
+   * La firma de que el modelo, en vez de transcribir y callarse, siguió escribiendo: normalmente
+   * repitiéndose el propio enunciado. [LimpiadorDeEco] corta lo que reconoce; esto es la red por
+   * debajo, para las divagaciones que no reconozca.
+   */
+  TRANSCRIPCION_DESBORDADA(esDuda = true),
 
-  /** La diferencia se explica por el acento andino, no por un error de lectura. */
-  VARIACION_ANDINA,
+  /**
+   * Lo dicho no se parece a lo escrito.
+   *
+   * Se descarta porque suele ser el transcriptor oyendo otra cosa, **pero también es la firma del
+   * error de lectura más grave**: adivinar la palabra entera por el contexto. No se puede marcar sin
+   * más, y desde luego no se puede premiar.
+   */
+  DISTANCIA_EXCESIVA(esDuda = true),
 
-  /** Palabra demasiado corta como para fiarse de la transcripción. */
-  PALABRA_MUY_CORTA,
+  /**
+   * La diferencia se explica por el acento andino, no por un error de lectura.
+   *
+   * **No es duda: es lectura correcta.** Un niño que dice "pilota" por "pelota" está leyendo bien
+   * con su acento, y mandarle repetir sería castigar el habla andina — exactamente el daño que este
+   * proyecto existe para no causar.
+   */
+  VARIACION_ANDINA(esDuda = false),
+
+  /** Palabra demasiado corta como para fiarse. Se le da el beneficio de la duda al niño. */
+  PALABRA_MUY_CORTA(esDuda = false),
 }
 
 data class Descartado(val error: ErrorLectura, val motivo: Motivo)
@@ -32,7 +69,23 @@ data class ResultadoLectura(
 
   /** Si es false, Masi no corrige nada y pide repetir con cariño. */
   val transcripcionFiable: Boolean,
-)
+) {
+  /**
+   * Si quedó alguna diferencia sin explicar.
+   *
+   * **Esto es lo que separa "leyó bien" de "no me enteré".** Sin errores marcados y sin dudas, el
+   * niño leyó bien y hay que felicitarlo. Sin errores marcados pero CON dudas, lo honesto es pedir
+   * que repita: no sabemos qué pasó, y aplaudir por si acaso es lo peor que se puede hacer en una
+   * app que enseña a leer.
+   *
+   * Una transcripción no fiable cuenta como duda por sí sola, sin mirar los descartes. No es
+   * redundante: hay caminos que devuelven `transcripcionFiable = false` con la lista de descartes
+   * vacía —el desbordamiento, por ejemplo, donde el eco hace que no se detecte ni una diferencia—
+   * y sin esta cláusula esos casos parecerían una lectura impecable.
+   */
+  val hayDudas: Boolean
+    get() = !transcripcionFiable || descartados.any { it.motivo.esDuda }
+}
 
 /**
  * Decide qué discrepancias se convierten en corrección y cuáles se dejan pasar.
@@ -50,8 +103,30 @@ data class ResultadoLectura(
  */
 object PoliticaConservadora {
 
-  /** Más de esto en una sola frase y se asume que quien falla es la transcripción. */
-  const val MAX_DISCREPANCIAS = 2
+  /**
+   * Cuántas palabras pueden salir distintas antes de desconfiar de la transcripción entera.
+   *
+   * **Era un 2 fijo, y era demasiado poco.** En una frase de diez palabras, un niño con dificultades
+   * de lectura falla tres o cuatro con toda naturalidad — es literalmente el perfil de usuario de
+   * esta app — y con el tope antiguo esa lectura se descartaba entera: ni una tarjeta, y un "no te
+   * escuché bien" que además era mentira.
+   *
+   * Ahora escala con la frase: la mitad de las palabras, y nunca menos de tres. Un fragmento de diez
+   * admite cinco fallos; uno de cuatro, tres.
+   *
+   * Sigue habiendo tope, y no por cautela abstracta: por encima de la mitad de las palabras ya no se
+   * puede distinguir un niño que lee muy mal de una transcripción que no ha entendido nada, y en esa
+   * frontera marcar diez errores de golpe es lo peor que puede hacer una app que enseña a leer.
+   */
+  fun maxDiscrepancias(palabrasEsperadas: Int): Int = maxOf(3, palabrasEsperadas / 2)
+
+  /**
+   * Cuánto más largo que la frase puede venir lo transcrito antes de no fiarse.
+   *
+   * Que el niño diga alguna palabra de más es normal y no se penaliza. Que lleguen dieciséis
+   * palabras para una frase de cinco no es el niño hablando: es el modelo divagando.
+   */
+  const val FACTOR_MAXIMO_DICHO = 1.6
 
   /** Por debajo de esta fracción de palabras leídas, la grabación no sirve para evaluar. */
   const val FRACCION_MINIMA_LEIDA = 0.5
@@ -116,10 +191,21 @@ object PoliticaConservadora {
       return ResultadoLectura(emptyList(), todas, transcripcionFiable = false)
     }
 
+    // Llegó mucho más de lo que cabía. Ver [Motivo.TRANSCRIPCION_DESBORDADA]: sin esta guarda, el
+    // texto de sobra le da al alineador un camino más barato que el correcto y los errores de verdad
+    // desaparecen sin dejar rastro.
+    if (dichas.size > esperadas.size * FACTOR_MAXIMO_DICHO + 2) {
+      val todas =
+        DetectorErrores.comparar(textoEsperado, textoDicho).map {
+          Descartado(it, Motivo.TRANSCRIPCION_DESBORDADA)
+        }
+      return ResultadoLectura(emptyList(), todas, transcripcionFiable = false)
+    }
+
     val brutos = DetectorErrores.comparar(textoEsperado, textoDicho)
 
     // Regla 3: demasiadas diferencias ⇒ la transcripción no es de fiar. No se marca ninguna.
-    if (brutos.size > MAX_DISCREPANCIAS) {
+    if (brutos.size > maxDiscrepancias(esperadas.size)) {
       return ResultadoLectura(
         errores = emptyList(),
         descartados = brutos.map { Descartado(it, Motivo.DEMASIADAS_DISCREPANCIAS) },

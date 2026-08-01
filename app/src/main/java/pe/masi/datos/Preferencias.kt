@@ -24,6 +24,17 @@ class Preferencias(private val context: Context) {
     val MODO_DEMO = booleanPreferencesKey("modo_demo")
     val OPEN_DYSLEXIC = booleanPreferencesKey("open_dyslexic")
     val ORDEN_CONTENIDO = stringPreferencesKey("orden_contenido")
+
+    /** Lo que el adulto eligió en Ajustes: automático o un reparto GPU/CPU fijo. */
+    val PREFERENCIA_MOTOR = stringPreferencesKey("preferencia_motor")
+
+    /**
+     * El peldaño al que Masi bajó sola en este teléfono.
+     *
+     * Se recuerda entre sesiones a propósito: si aquí la GPU no sirve, no va a servir mañana, y
+     * reintentarla en cada arranque solo produce dos fotos fallidas antes de volver a bajar.
+     */
+    val PELDANO_APRENDIDO = stringPreferencesKey("peldano_aprendido")
     // "modo_escucha" existió y se retiró: elegía entre leer por frases o practicar solo las 8
     // palabras más difíciles, y esa segunda opción se saltaba el 95 % del texto sin avisar. La
     // clave puede quedar escrita en el DataStore de quien ya tenga la app; simplemente se ignora.
@@ -46,6 +57,20 @@ class Preferencias(private val context: Context) {
    */
   val prefiereOpenDyslexic: Flow<Boolean> =
     context.dataStore.data.map { it[Claves.OPEN_DYSLEXIC] ?: false }
+
+  val preferenciaMotor: Flow<String> =
+    context.dataStore.data.map { it[Claves.PREFERENCIA_MOTOR] ?: "AUTOMATICO" }
+
+  val peldanoAprendido: Flow<String?> =
+    context.dataStore.data.map { it[Claves.PELDANO_APRENDIDO] }
+
+  suspend fun ponerPreferenciaMotor(valor: String) {
+    context.dataStore.edit { it[Claves.PREFERENCIA_MOTOR] = valor }
+  }
+
+  suspend fun ponerPeldanoAprendido(valor: String) {
+    context.dataStore.edit { it[Claves.PELDANO_APRENDIDO] = valor }
+  }
 
   /** El orden imagen/audio/texto. Existe para poder hacer el A/B sin recompilar. */
   val ordenContenido: Flow<String> =

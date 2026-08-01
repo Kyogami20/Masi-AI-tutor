@@ -2,6 +2,8 @@ package pe.masi.servicios
 
 import java.time.LocalDate
 import kotlinx.coroutines.flow.Flow
+import pe.masi.datos.Cuento
+import pe.masi.datos.CuentoDao
 import pe.masi.datos.Tarjeta
 import pe.masi.datos.TarjetaDao
 
@@ -40,7 +42,7 @@ object Repaso {
 }
 
 /** La cara de [Repaso] que habla con la base de datos y aplica los topes de producto. */
-class RepasoService(private val dao: TarjetaDao) {
+class RepasoService(private val dao: TarjetaDao, private val cuentos: CuentoDao) {
 
   fun todas(): Flow<List<Tarjeta>> = dao.todas()
 
@@ -74,11 +76,116 @@ class RepasoService(private val dao: TarjetaDao) {
    *
    * @return true si se creó una tarjeta nueva.
    */
-  suspend fun guardarFallo(palabra: String, silabas: String, pista: String): Boolean {
-    val existente = dao.buscar(palabra)
-    if (existente != null) return false
-    dao.insertar(Tarjeta(palabra = palabra, silabas = silabas, pista = pista))
-    return true
+  /**
+   * Guarda las palabras falladas de una oración, en orden, hasta agotar el cupo de la sesión.
+   *
+   * Es una lista y no una palabra porque en una oración de diez palabras se puede fallar más de
+   * una, y antes solo se guardaba la primera.
+   *
+   * El cupo ([Repaso.MAX_NUEVAS_POR_SESION]) se aplica **por tarjeta creada, no por oración**, y
+   * ahora importa más que antes: con varias palabras por frase se llenaría en dos o tres oraciones.
+   * Las que no caben no se pierden como problema —se le siguen mostrando al niño con su pista—,
+   * simplemente no entran hoy en la cola de repaso. Un niño con veinte tarjetas nuevas abandona.
+   */
+  suspend fun guardarFallos(palabras: List<PalabraFallada>, creadasEnLaSesion: Int): List<Guardado> {
+    var hueco = huecoParaNuevas(creadasEnLaSesion)
+    return palabras.map { palabra ->
+      if (hueco <= 0 && dao.buscar(palabra.clave) == null) {
+        Guardado.NO_CUPO
+      } else {
+        guardarUna(palabra).also { if (it == Guardado.CREADA) hueco-- }
+      }
+    }
+  }
+
+  private suspend fun guardarUna(palabra: PalabraFallada): Guardado {
+    val existente = dao.buscar(palabra.clave)
+    if (existente != null) {
+      // El nivel NO se toca: volver a fallar una palabra que llevas practicando dos semanas no debe
+      // devolverte al principio de la escalera.
+      //
+      // Pero la ortografía sí se repara si hace falta. Las tarjetas creadas antes de que se guardara
+      // la escritura real dicen "mama" y "pesame", y esas tildes no se pueden adivinar — "mama" y
+      // "mamá" son palabras distintas. Aquí, en cambio, no se adivina nada: la palabra acaba de
+      // aparecer en un texto de verdad y sabemos cómo está impresa. Solo se corrige con esa prueba
+      // delante.
+      if (existente.escritura != palabra.escritura && palabra.escritura.isNotBlank()) {
+        dao.actualizar(existente.copy(escritura = palabra.escritura, silabas = palabra.silabas))
+      }
+      return Guardado.YA_ESTABA
+    }
+    dao.insertar(
+      Tarjeta(
+        palabra = palabra.clave,
+        escritura = palabra.escritura,
+        silabas = palabra.silabas,
+        pista = palabra.pista,
+      )
+    )
+    return Guardado.CREADA
+  }
+
+  /** Las que todavía no han pasado por el ENRIQUECEDOR. */
+  suspend fun sinEnriquecer(): List<Tarjeta> = colaDePractica().filter { !it.estaEnriquecida }
+
+  /** Guarda lo que el ENRIQUECEDOR consiguió. Nunca toca el nivel ni la fecha de repaso. */
+  suspend fun guardarEnriquecimiento(
+    clave: String,
+    definicion: String,
+    ejemplo: String,
+    pictograma: String?,
+  ) {
+    val tarjeta = dao.buscar(clave) ?: return
+    dao.actualizar(
+      tarjeta.copy(
+        definicion = definicion,
+        ejemplo = ejemplo,
+        pictograma = pictograma ?: tarjeta.pictograma,
+      )
+    )
+  }
+
+  // --- Cuentos ---------------------------------------------------------------------------------
+
+  /**
+   * Las palabras que mejor le vienen a un cuento: las que peor lleva.
+   *
+   * Se ordenan por nivel ascendente —las de peldaño bajo son las que más se le resisten— y se
+   * devuelve la ortografía real, no la clave normalizada: el cuento lo va a leer un niño.
+   */
+  suspend fun palabrasParaCuento(cuantas: Int): List<String> =
+    colaDePractica().sortedBy { it.nivel }.take(cuantas).map { it.comoSeEscribe }
+
+  suspend fun guardarCuento(titulo: String, texto: String, palabras: List<String>): Cuento {
+    val cuento =
+      Cuento(titulo = titulo, texto = texto, palabrasUsadas = palabras.joinToString(", "))
+    val id = cuentos.insertar(cuento)
+    return cuento.copy(id = id)
+  }
+
+  fun todosLosCuentos(): Flow<List<Cuento>> = cuentos.todos()
+
+  /** Los títulos ya usados, para que el CUENTISTA no repita. Comprobación de SQL, no de modelo. */
+  suspend fun titulosDeCuentos(): List<String> = cuentos.titulos()
+
+  suspend fun tituloRepetido(titulo: String): Boolean = cuentos.cuantosConTitulo(titulo.trim()) > 0
+
+  fun cuantosCuentos(): Flow<Int> = cuentos.cuantos()
+
+  suspend fun cuentoPorId(id: Long): Cuento? = cuentos.porId(id)
+
+  suspend fun borrarCuento(id: Long) = cuentos.borrar(id)
+
+  /** Qué pasó al intentar guardar una palabra fallada. Se le cuenta al niño en pantalla. */
+  enum class Guardado {
+    /** Tarjeta nueva. */
+    CREADA,
+
+    /** Ya la estaba practicando: no se duplica ni se le reinicia el nivel. */
+    YA_ESTABA,
+
+    /** El cupo de palabras nuevas de la sesión está lleno. Se le enseña igual, pero no se guarda. */
+    NO_CUPO,
   }
 
   /** Cuántas tarjetas nuevas caben todavía en esta sesión. */
@@ -96,7 +203,9 @@ class RepasoService(private val dao: TarjetaDao) {
    * que haberla aprendido. Lo que enseña es volver a encontrarla dentro de unos días.
    */
   suspend fun registrarAciertoDe(palabra: String, hoy: LocalDate = LocalDate.now()) {
-    val tarjeta = dao.buscar(palabra) ?: return
+    // Se normaliza aquí: quien llama tiene la palabra tal como se escribe ("estableció") y la clave
+    // de la tabla es la forma sin tildes.
+    val tarjeta = dao.buscar(DetectorErrores.normalizar(palabra)) ?: return
     dao.actualizar(Repaso.repasar(tarjeta, acierto = true, hoy = hoy))
   }
 }

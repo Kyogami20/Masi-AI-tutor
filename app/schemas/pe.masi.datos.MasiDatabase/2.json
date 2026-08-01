@@ -1,0 +1,73 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 2,
+    "identityHash": "c93eb58b412df89dbbdd20727d9f6980",
+    "entities": [
+      {
+        "tableName": "tarjetas",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`palabra` TEXT NOT NULL, `escritura` TEXT NOT NULL, `silabas` TEXT NOT NULL, `pista` TEXT NOT NULL, `nivel` INTEGER NOT NULL, `proximoDiaEpoch` INTEGER NOT NULL, `creadaDiaEpoch` INTEGER NOT NULL, `aciertos` INTEGER NOT NULL, PRIMARY KEY(`palabra`))",
+        "fields": [
+          {
+            "fieldPath": "palabra",
+            "columnName": "palabra",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "escritura",
+            "columnName": "escritura",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "silabas",
+            "columnName": "silabas",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pista",
+            "columnName": "pista",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nivel",
+            "columnName": "nivel",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "proximoDiaEpoch",
+            "columnName": "proximoDiaEpoch",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "creadaDiaEpoch",
+            "columnName": "creadaDiaEpoch",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "aciertos",
+            "columnName": "aciertos",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "palabra"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'c93eb58b412df89dbbdd20727d9f6980')"
+    ]
+  }
+}

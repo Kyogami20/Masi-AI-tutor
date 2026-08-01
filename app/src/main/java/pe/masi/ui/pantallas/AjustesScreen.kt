@@ -18,10 +18,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import pe.masi.motor.EstadoMotor
+import android.content.Intent
 import pe.masi.motor.OrdenContenido
+import pe.masi.motor.PreferenciaDeMotor
 import pe.masi.ui.MasiViewModel
 import pe.masi.ui.componentes.FondoMasi
 import pe.masi.ui.componentes.Hueco
@@ -40,6 +43,10 @@ fun AjustesScreen(vm: MasiViewModel, onVolver: () -> Unit) {
   val palabrasSemana by vm.palabrasDeLaSemana.collectAsStateWithLifecycle()
   val total by vm.totalTarjetas.collectAsStateWithLifecycle()
   val orden by vm.ordenContenido.collectAsStateWithLifecycle()
+  val preferenciaMotor by vm.preferenciaMotor.collectAsStateWithLifecycle()
+  val context = LocalContext.current
+  // Se recalcula en cada recomposición a propósito: la memoria libre cambia mientras miras.
+  val informe = vm.informeDelTelefono()
 
   FondoMasi(modifier = Modifier.fillMaxSize()) {
     Column(
@@ -128,16 +135,85 @@ fun AjustesScreen(vm: MasiViewModel, onVolver: () -> Unit) {
       HorizontalDivider()
       Hueco(24)
 
-      Text("Estado del motor", style = MaterialTheme.typography.bodyMedium)
+      // --- Cómo trabaja el motor ---
+      //
+      // Este selector existe por un caso real: en un moto g54 5G la GPU corría el texto bien y
+      // rompía SOLO con las fotos, y la app no daba ninguna forma de arreglarlo. En Automático Masi
+      // baja de peldaño sola cuando lo detecta; las opciones fijas son para no depender de eso.
+      Text("Cómo trabaja el motor", style = MaterialTheme.typography.bodyMedium)
+      Hueco(8)
+      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        for (opcion in PreferenciaDeMotor.entries) {
+          FilterChip(
+            selected = preferenciaMotor == opcion,
+            onClick = { vm.ponerPreferenciaDeMotor(opcion) },
+            label = { Text(etiquetaDeMotor(opcion)) },
+          )
+        }
+      }
       Hueco(8)
       Text(
-        when (val e = estadoMotor) {
-          is EstadoMotor.Listo ->
-            "Encendido. GPU: ${if (e.aceleracionGpu) "sí" else "no"} · MTP: ${if (e.mtp) "sí" else "no"}"
-          is EstadoMotor.Cargando -> "Encendiendo…"
-          is EstadoMotor.SinModelo -> "Sin modelo cargado"
-          is EstadoMotor.Error -> "Error: ${e.mensaje}"
-        },
+        "Si Masi no reconoce el libro por más que lo intentes, prueba \"Visión en el procesador\": " +
+          "es más lento con las fotos pero funciona en teléfonos donde el acelerador gráfico falla.",
+        style = MaterialTheme.typography.labelMedium,
+      )
+
+      Hueco(24)
+      HorizontalDivider()
+      Hueco(24)
+
+      // --- Diagnóstico ---
+      //
+      // Esta sección es para que alguien del equipo pueda mandar un informe por WhatsApp. Sin ella,
+      // un fallo en un teléfono ajeno es "no me funciona" y a partir de ahí se adivina.
+      Text("Diagnóstico", style = MaterialTheme.typography.bodyMedium)
+      Hueco(8)
+      Text(informe, style = MaterialTheme.typography.labelMedium)
+      Hueco(8)
+      TextButton(
+        onClick = {
+          val envio =
+            Intent(Intent.ACTION_SEND).apply {
+              type = "text/plain"
+              putExtra(Intent.EXTRA_SUBJECT, "Masi · informe del teléfono")
+              putExtra(Intent.EXTRA_TEXT, informe)
+            }
+          context.startActivity(Intent.createChooser(envio, "Compartir el informe"))
+        }
+      ) {
+        Text("Compartir este informe")
+      }
+
+      // La última escucha, y **solo en pantalla**. No va en el informe de arriba a propósito: ese
+      // se manda por WhatsApp y no puede llevar nada que haya dicho un niño.
+      //
+      // Sirve para una pregunta muy concreta que hasta ahora hacía falta un cable para responder:
+      // cuando Masi felicita por una palabra mal leída, ¿es que se tragó el error, o es que el
+      // modelo escribió la palabra correcta porque era la que esperaba oír? Son dos averías
+      // distintas y desde fuera se ven igual.
+      vm.ultimaEscucha()?.let { escucha ->
+        Hueco(16)
+        Text("Última escucha (no se comparte)", style = MaterialTheme.typography.bodyMedium)
+        Hueco(8)
+        Text(
+          "Decía: \"${escucha.esperado}\"\n" +
+            "Se oyó: \"${escucha.transcrito}\"\n" +
+            "Masi: ${escucha.decision}",
+          style = MaterialTheme.typography.labelMedium,
+        )
+      }
+
+      Hueco(24)
+      HorizontalDivider()
+      Hueco(24)
+
+      // La licencia de los pictogramas (CC BY-NC-SA) obliga a atribuir. No es un detalle legal
+      // menor: es la condición de uso, y va dentro de la app, no solo en el README.
+      Text("Pictogramas", style = MaterialTheme.typography.bodyMedium)
+      Hueco(8)
+      Text(
+        "Autor: Sergio Palao. Origen: ARASAAC (arasaac.org). Licencia: CC BY-NC-SA. " +
+          "Propiedad: Gobierno de Aragón.",
         style = MaterialTheme.typography.labelMedium,
       )
 
@@ -168,3 +244,12 @@ private fun Fila(titulo: String, detalle: String, marcado: Boolean, onCambio: (B
     Switch(checked = marcado, onCheckedChange = onCambio)
   }
 }
+
+/** Los nombres del selector, en palabras que un adulto entienda sin saber qué es una GPU. */
+private fun etiquetaDeMotor(opcion: PreferenciaDeMotor): String =
+  when (opcion) {
+    PreferenciaDeMotor.AUTOMATICO -> "Automático (recomendado)"
+    PreferenciaDeMotor.FORZAR_GPU -> "Siempre acelerador gráfico"
+    PreferenciaDeMotor.FORZAR_VISION_CPU -> "Visión en el procesador"
+    PreferenciaDeMotor.FORZAR_CPU -> "Todo en el procesador"
+  }

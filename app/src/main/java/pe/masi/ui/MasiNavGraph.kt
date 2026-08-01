@@ -8,6 +8,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import pe.masi.ui.pantallas.AjustesScreen
 import pe.masi.ui.pantallas.BienvenidaScreen
+import pe.masi.ui.pantallas.CuentosScreen
 import pe.masi.ui.pantallas.EscucharScreen
 import pe.masi.ui.pantallas.InicioScreen
 import pe.masi.ui.pantallas.LeerScreen
@@ -26,6 +27,7 @@ object Rutas {
   const val LEER = "leer"
   const val ESCUCHAR = "escuchar"
   const val TARJETAS = "tarjetas"
+  const val CUENTOS = "cuentos"
   const val AJUSTES = "ajustes"
 }
 
@@ -54,6 +56,7 @@ fun MasiNavGraph(
           nav.navigate(Rutas.LEER)
         },
         onTarjetas = { nav.navigate(Rutas.TARJETAS) },
+        onCuentos = { nav.navigate(Rutas.CUENTOS) },
         onAjustes = { nav.navigate(Rutas.AJUSTES) },
       )
     }
@@ -81,6 +84,16 @@ fun MasiNavGraph(
           vm.reiniciarLeer()
           nav.navigate(Rutas.LEER)
         },
+      )
+    }
+
+    composable(Rutas.CUENTOS) {
+      CuentosScreen(
+        vm = vm,
+        onVolver = { nav.popBackStack() },
+        // El cuento entra en la MISMA pantalla de Escuchar que una página fotografiada. El
+        // ViewModel ya dejó preparados los fragmentos al generarlo o al abrirlo.
+        onLeerCuento = { nav.navigate(Rutas.ESCUCHAR) },
       )
     }
 

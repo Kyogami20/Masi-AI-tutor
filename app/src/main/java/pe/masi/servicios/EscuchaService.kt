@@ -22,9 +22,16 @@ private const val TIMEOUT_MS = 45_000L
 @Serializable data class TranscripcionLiteral(val dicho: String = "")
 
 data class ResultadoEscucha(
-  /** Lo que el modelo dijo haber oído. Vacío si falló. */
+  /** Lo que el modelo dijo haber oído, **tal cual salió**. Vacío si falló. */
   val transcripcion: String,
   val lectura: ResultadoLectura,
+  /**
+   * Lo que de verdad se comparó, después de cortarle el eco del prompt.
+   *
+   * Se guarda aparte del crudo para que la pantalla de diagnóstico pueda enseñar los dos cuando no
+   * coinciden. Sin eso, un eco que el limpiador no reconozca vuelve a ser invisible.
+   */
+  val comparado: String = transcripcion,
 ) {
   val hayErrores: Boolean
     get() = lectura.errores.isNotEmpty()
@@ -82,12 +89,20 @@ class EscuchaService(private val motor: MotorMasi) : Transcriptor {
     val dicho =
       ParserTolerante.parsear<TranscripcionLiteral>(bruto)?.dicho ?: rescatarTextoSuelto(bruto)
 
-    Log.d(TAG, "Esperado: '$textoEsperado' | Transcrito: '$dicho'")
+    // El modelo suele seguir escribiendo después de transcribir, y se copia el enunciado entero.
+    // Ver [LimpiadorDeEco]: si esa copia llega a la comparación, los errores de verdad desaparecen.
+    val limpio = LimpiadorDeEco.limpiar(textoEsperado, dicho)
+    if (limpio != DetectorErrores.normalizar(dicho)) {
+      Log.w(TAG, "Se recortó el eco del enunciado: '$dicho' → '$limpio'")
+    }
+
+    Log.d(TAG, "Esperado: '$textoEsperado' | Transcrito: '$dicho' | Comparado: '$limpio'")
 
     // La comparación NO la hace el modelo. Aquí solo llega texto.
     return ResultadoEscucha(
       transcripcion = dicho,
-      lectura = PoliticaConservadora.evaluar(textoEsperado, dicho),
+      lectura = PoliticaConservadora.evaluar(textoEsperado, limpio),
+      comparado = limpio,
     )
   }
 

@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -47,6 +49,7 @@ import pe.masi.ui.EstadoEscuchar
 import pe.masi.ui.MasiViewModel
 import pe.masi.ui.componentes.BarraInferior
 import pe.masi.ui.componentes.BotonGrande
+import pe.masi.ui.componentes.CartaPalabra
 import pe.masi.ui.componentes.EstadoCargando
 import pe.masi.ui.componentes.FilaDeBotones
 import pe.masi.ui.componentes.Hueco
@@ -152,19 +155,7 @@ fun EscucharScreen(vm: MasiViewModel, onTerminar: () -> Unit) {
                 textAlign = TextAlign.Center,
               )
             }
-            is EstadoEscuchar.ConPista -> {
-              // Se muestra siempre la forma CORRECTA, en grande. Lo que el niño dijo mal no
-              // aparece escrito por ninguna parte: verlo grande refuerza lo que hay que corregir.
-              PalabraGigante(palabra = e.error.esperado, silabas = e.silabas)
-              Hueco(16)
-              Text(
-                text = e.pista,
-                style = MaterialTheme.typography.bodyLarge,
-                textAlign = TextAlign.Center,
-                color = MaterialTheme.colorScheme.onBackground,
-                modifier = Modifier.fillMaxWidth(),
-              )
-            }
+            is EstadoEscuchar.ConPista -> PalabrasQueCostaron(e)
             is EstadoEscuchar.Repetir -> {
               MostrarObjetivo(objetivo)
               Hueco(16)
@@ -196,6 +187,70 @@ fun EscucharScreen(vm: MasiViewModel, onTerminar: () -> Unit) {
 
       Acciones(vm, estado, objetivo, practicando, tienePermiso, onTerminar)
       Hueco(12)
+    }
+  }
+}
+
+/**
+ * Las palabras de la oración que salieron distintas.
+ *
+ * Antes aquí solo cabía una, porque el evaluador descartaba el resto. En una oración de diez
+ * palabras se puede fallar más de una, y quedarse con la primera significaba perder las demás sin
+ * decírselo a nadie.
+ *
+ * La primera va en grande con su pista: es la que trae explicación recién hecha por el TUTOR y la
+ * que se reintenta al pulsar "Léela tú". Las demás van como cartas, ya guardadas para Practicar.
+ *
+ * **Nunca se escribe lo que el niño dijo mal.** Solo aparece la forma correcta; ver el error
+ * escrito en grande es exactamente lo que no hay que reforzar.
+ */
+@Composable
+private fun PalabrasQueCostaron(estado: EstadoEscuchar.ConPista) {
+  val principal = estado.principal
+  PalabraGigante(palabra = principal.escritura, silabas = principal.silabas)
+  Hueco(16)
+  Text(
+    text = principal.pista,
+    style = MaterialTheme.typography.bodyLarge,
+    textAlign = TextAlign.Center,
+    color = MaterialTheme.colorScheme.onBackground,
+    modifier = Modifier.fillMaxWidth(),
+  )
+
+  if (principal.yaEstaba) {
+    Hueco(8)
+    Text(
+      text = "Esta ya la estabas practicando",
+      style = MaterialTheme.typography.labelMedium,
+      textAlign = TextAlign.Center,
+      color = VerdeLogro,
+      modifier = Modifier.fillMaxWidth(),
+    )
+  }
+
+  val resto = estado.palabras.drop(1)
+  if (resto.isEmpty()) return
+
+  Hueco(24)
+  Text(
+    text = if (resto.size == 1) "Esta también la guardé" else "Estas también las guardé",
+    style = MaterialTheme.typography.labelMedium,
+    textAlign = TextAlign.Center,
+    color = MaterialTheme.colorScheme.outline,
+    modifier = Modifier.fillMaxWidth(),
+  )
+  Hueco(10)
+  Row(
+    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+    modifier = Modifier.fillMaxWidth(),
+  ) {
+    resto.forEach { palabra ->
+      CartaPalabra(
+        palabra = palabra.escritura,
+        silabas = palabra.silabas,
+        nota = if (palabra.yaEstaba) "ya la practicabas" else null,
+        modifier = Modifier.weight(1f, fill = false).widthIn(max = 170.dp),
+      )
     }
   }
 }
@@ -294,7 +349,7 @@ private fun Acciones(
           descripcion = stringResource(R.string.cd_escuchar_de_nuevo),
           color = AzulCalma,
           tamano = tamano,
-          onClick = { vm.deletrear(e.error.esperado) },
+          onClick = { vm.deletrear(e.principal.escritura) },
         )
         // El botón que faltaba: intentarlo otra vez, aquí y ahora, con la pista delante.
         BotonGrande(
@@ -303,7 +358,7 @@ private fun Acciones(
           descripcion = "Volver a leer esta palabra",
           habilitado = tienePermiso,
           tamano = tamano,
-          onClick = vm::practicarPalabraFallada,
+          onClick = { vm.practicarPalabraFallada() },
         )
         BotonGrande(
           icono = Icons.AutoMirrored.Rounded.ArrowForward,

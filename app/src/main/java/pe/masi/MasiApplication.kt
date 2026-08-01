@@ -13,9 +13,14 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import pe.masi.datos.MasiDatabase
+import pe.masi.diagnostico.Antecedente
+import pe.masi.diagnostico.CajaNegra
 import pe.masi.datos.Preferencias
 import pe.masi.media.VozMasi
 import pe.masi.motor.MotorMasi
+import pe.masi.servicios.CargadorDePictogramas
+import pe.masi.servicios.CuentistaService
+import pe.masi.servicios.EnriquecedorService
 import pe.masi.servicios.EscuchaService
 import pe.masi.servicios.EvaluadorPronunciacion
 import pe.masi.servicios.LectorService
@@ -28,7 +33,7 @@ import pe.masi.servicios.TutorService
  * Sin framework de inyección: son ocho objetos y un grafo que cabe en la cabeza. Meter Hilt aquí
  * sería añadir compilación anotada, tiempo de build y un manual entero a cambio de nada.
  */
-class Contenedor(context: Context) {
+class Contenedor(private val context: Context) {
 
   /**
    * El motor vive aquí y no en un ViewModel a propósito: cargar el modelo cuesta segundos y varios
@@ -40,7 +45,7 @@ class Contenedor(context: Context) {
   val preferencias = Preferencias(context)
 
   private val db = MasiDatabase.obtener(context)
-  val repaso = RepasoService(db.tarjetaDao())
+  val repaso = RepasoService(db.tarjetaDao(), db.cuentoDao())
 
   val lector by lazy { LectorService(motor) }
   val escucha by lazy { EscuchaService(motor) }
@@ -48,6 +53,17 @@ class Contenedor(context: Context) {
 
   /** El bucle de evaluación que comparten la pantalla de Escuchar y la de Practicar. */
   val evaluador by lazy { EvaluadorPronunciacion(escucha, tutor) }
+
+  val cuentista by lazy { CuentistaService(motor, repaso) }
+
+  /** El banco de pictogramas vive en assets: se lee una vez y se queda en memoria. */
+  val pictogramas by lazy { CargadorDePictogramas.cargar(context) }
+
+  /**
+   * El servicio agéntico de Masi: el modelo busca el dibujo, y si no lo encuentra razona con qué
+   * concepto emparentado volver a buscar. Ver [EnriquecedorService].
+   */
+  val enriquecedor by lazy { EnriquecedorService(motor, pictogramas) }
 
   fun liberar() {
     motor.liberar()
@@ -114,6 +130,17 @@ class MasiApplication : Application() {
 
   override fun onCreate() {
     super.onCreate()
+
+    // LO PRIMERO, antes de construir nada: leer si la vez anterior la app murió y dónde.
+    //
+    // Tiene que ir aquí porque el resto del arranque ya empieza a poner migas nuevas, y si se
+    // leyera después se leería la de esta ejecución en vez de la de la anterior.
+    val antecedente = CajaNegra.revisarYLimpiar(this)
+    if (antecedente is Antecedente.SeCerroEn) {
+      Log.w(TAG, "Arranque tras un cierre: ${antecedente.paso.descripcion}")
+    }
+    instalarManejadorDeFallos()
+
     contenedor = Contenedor(this)
 
     ProcessLifecycleOwner.get()
@@ -143,6 +170,9 @@ class MasiApplication : Application() {
            * recarga. Soltarlo a propósito es más barato que que te lo quiten.
            */
           override fun onStop(owner: LifecycleOwner) {
+            // Irse a segundo plano no es un fallo. Si el sistema cierra la app estando fuera de
+            // pantalla, dejar la miga puesta produciría un aviso falso al volver a abrirla.
+            CajaNegra.quitar(this@MasiApplication)
             if (!contenedor.motor.estaListo) return
             soltadoPendiente =
               alcance.launch {
@@ -176,6 +206,30 @@ class MasiApplication : Application() {
   // hace falta responder a la memoria, la única vía segura es `motor.soltar()` desde una corrutina,
   // nunca `liberar()` a pelo. Android ya sabe matar el proceso si de verdad necesita la RAM, y eso
   // es más barato que un fallo nativo.
+
+  /**
+   * Guarda la traza de los fallos de Java antes de que el proceso muera.
+   *
+   * Cubre solo la mitad del problema, y conviene tenerlo claro: **los cierres por memoria y los
+   * fallos nativos de `liblitertlm_jni.so` no pasan por aquí**, porque no hay excepción de Java que
+   * capturar. Para esos está la miga de pan de [CajaNegra], que ya está escrita en disco antes de
+   * que nada ocurra.
+   *
+   * Se encadena al manejador anterior en vez de sustituirlo: quitarle a Android su gestión de
+   * cierres dejaría a la app colgada en vez de cerrarse, que es peor.
+   */
+  private fun instalarManejadorDeFallos() {
+    val anterior = Thread.getDefaultUncaughtExceptionHandler()
+    Thread.setDefaultUncaughtExceptionHandler { hilo, fallo ->
+      runCatching {
+        CajaNegra.anotarTraza(this, buildString {
+          appendLine("${fallo::class.java.simpleName}: ${fallo.message}")
+          fallo.stackTrace.take(8).forEach { appendLine("  en $it") }
+        })
+      }
+      anterior?.uncaughtException(hilo, fallo)
+    }
+  }
 
   override fun onTerminate() {
     contenedor.liberar()

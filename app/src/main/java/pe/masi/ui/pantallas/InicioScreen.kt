@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Style
@@ -27,8 +28,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import pe.masi.R
 import pe.masi.ui.MasiViewModel
 import pe.masi.ui.componentes.BotonGrande
+import pe.masi.ui.componentes.TamanoBoton
 import pe.masi.ui.componentes.FondoMasi
 import pe.masi.ui.componentes.Hueco
+import pe.masi.ui.theme.Terracota
 import pe.masi.ui.theme.VerdeLogro
 
 /**
@@ -43,6 +46,7 @@ fun InicioScreen(
   vm: MasiViewModel,
   onLeer: () -> Unit,
   onTarjetas: () -> Unit,
+  onCuentos: () -> Unit,
   onAjustes: () -> Unit,
 ) {
   val pendientes by vm.cola.collectAsStateWithLifecycle()
@@ -85,7 +89,24 @@ fun InicioScreen(
           )
         }
 
-        Hueco(48)
+        Hueco(20)
+
+        // El tercer botón va aparte y más pequeño: leer y practicar son el recorrido principal, y
+        // el cuento es lo que Masi le regala cuando ya hay palabras suyas guardadas.
+        BotonGrande(
+          icono = Icons.Rounded.AutoAwesome,
+          etiqueta = "Un cuento",
+          descripcion = "Masi te escribe un cuento con tus palabras",
+          color = Terracota,
+          tamano = TamanoBoton.TRES,
+          habilitado = pendientes.size >= 2,
+          onClick = {
+            vm.callar()
+            onCuentos()
+          },
+        )
+
+        Hueco(28)
 
         // Lenguaje de progreso, siempre. Nunca "nivel bajo", nunca un semáforo en rojo, nunca una
         // etiqueta sobre el niño. Un niño que se cree tonto deja de intentarlo.

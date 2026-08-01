@@ -1,11 +1,15 @@
 package pe.masi.ui.componentes
 
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -32,9 +36,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -45,8 +52,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import pe.masi.servicios.BancoDePictogramas
 import pe.masi.ui.theme.Crema
 import pe.masi.ui.theme.CremaOscura
+import pe.masi.ui.theme.Terracota
+import pe.masi.ui.theme.VerdeLogro
 
 /**
  * Tamaños del botón grande según cuántos quepan en una fila.
@@ -346,6 +356,107 @@ fun PalabraGigante(palabra: String, silabas: String?, modifier: Modifier = Modif
 }
 
 /** Barra de progreso simple para la descarga del modelo. */
+/**
+ * Una palabra presentada como carta, con bordes redondeados.
+ *
+ * Es la unidad visual compartida por las dos pantallas donde aparecen palabras sueltas: las que
+ * acaban de costar al leer una oración, y la cuadrícula de Practicar. Que sea el mismo objeto en
+ * ambos sitios no es ahorro de código, es que **para el niño tienen que ser la misma cosa**: la
+ * palabra que se le atragantó hace un momento y la que va a repasar mañana.
+ *
+ * @param silabas se muestra debajo, más pequeña. La separación silábica sí tiene evidencia a favor.
+ * @param nota una línea corta de contexto, como "ya la estabas practicando".
+ * @param onClick si se pasa, la carta se puede tocar.
+ */
+@Composable
+fun CartaPalabra(
+  palabra: String,
+  silabas: String?,
+  modifier: Modifier = Modifier,
+  nota: String? = null,
+  pictograma: String? = null,
+  destacada: Boolean = false,
+  onClick: (() -> Unit)? = null,
+) {
+  // El tamaño baja con la longitud, igual que en PalabraGigante: una palabra larga a tamaño fijo se
+  // parte por la mitad y deja de leerse, que es justo lo contrario de lo que hace falta aquí.
+  val tamano =
+    when {
+      palabra.length <= 7 -> 32
+      palabra.length <= 10 -> 26
+      palabra.length <= 14 -> 21
+      else -> 17
+    }
+
+  Surface(
+    shape = RoundedCornerShape(20.dp),
+    color = if (destacada) CremaOscura else MaterialTheme.colorScheme.surface,
+    border = BorderStroke(if (destacada) 2.dp else 1.dp, if (destacada) Terracota else CremaOscura),
+    modifier =
+      modifier.then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+  ) {
+    Column(
+      horizontalAlignment = Alignment.CenterHorizontally,
+      verticalArrangement = Arrangement.spacedBy(6.dp),
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 16.dp),
+    ) {
+      Pictograma(pictograma, tamano = 72.dp)
+      Text(
+        text = palabra,
+        style = MaterialTheme.typography.headlineMedium.copy(fontSize = tamano.sp),
+        textAlign = TextAlign.Center,
+        maxLines = 1,
+        color = MaterialTheme.colorScheme.onBackground,
+      )
+      if (silabas != null && silabas != palabra) {
+        Text(
+          text = silabas,
+          style = MaterialTheme.typography.labelMedium,
+          textAlign = TextAlign.Center,
+          maxLines = 1,
+          color = MaterialTheme.colorScheme.outline,
+        )
+      }
+      if (nota != null) {
+        Text(
+          text = nota,
+          style = MaterialTheme.typography.labelSmall,
+          textAlign = TextAlign.Center,
+          color = VerdeLogro,
+        )
+      }
+    }
+  }
+}
+
+/**
+ * El pictograma de una palabra, cargado desde `assets/`.
+ *
+ * Se lee del APK, no de la red ni de la base: no hay nada que descargar y no puede fallar por
+ * conexión. Si el archivo no está —una tarjeta vieja, o el banco no se generó— simplemente no se
+ * pinta nada y la tarjeta se ve como antes.
+ */
+@Composable
+fun Pictograma(archivo: String?, modifier: Modifier = Modifier, tamano: Dp = 96.dp) {
+  if (archivo.isNullOrBlank()) return
+  val context = LocalContext.current
+  val imagen =
+    remember(archivo) {
+      runCatching {
+          context.assets.open(BancoDePictogramas.rutaDe(archivo)).use {
+            BitmapFactory.decodeStream(it)?.asImageBitmap()
+          }
+        }
+        .getOrNull()
+    } ?: return
+
+  Image(
+    bitmap = imagen,
+    contentDescription = null, // decorativo: la palabra ya está escrita al lado
+    modifier = modifier.size(tamano),
+  )
+}
+
 @Composable
 fun BarraProgreso(fraccion: Float, modifier: Modifier = Modifier) {
   Box(
